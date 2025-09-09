@@ -1,0 +1,183 @@
+---
+title: "STOMP_data_filtering"
+author: "Lana Bolin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Load data
+
+```{r, message=F}
+rm(list = ls())
+
+libraries <- c("tidyverse", "magrittr", "lme4", "car", "emmeans", "glmmTMB", "DHARMa", "multcomp", "ggeffects", "nlme", "MuMIn", "visreg", "ggsignif", "sjPlot", "sjmisc", "reshape2")
+invisible(lapply(libraries, require, character.only = T))
+
+setwd("~/GitHub/2025_lab_stomp")
+```
+
+Load data from EDI
+```{r}
+# Package ID: knb-lter-sev.330.3 Cataloging System:https://pasta.edirepository.org.
+# Data set title: SEV-LTER quadrat plant species cover and height all sites and experiments.
+# Data set creator:  Lauren Baur - University of New Mexico 
+# Data set creator:  Scott Collins - University of New Mexico 
+# Data set creator:  Esteban Muldavin - University of New Mexico 
+# Data set creator:  Jennifer Rudgers - University of New Mexico 
+# Data set creator:  William Pockman - University of New Mexico 
+# Contact:    - Information Manager University of New Mexico  - sevim@unm.edu
+# Stylesheet v2.15 for metadata conversion into program: John H. Porter, Univ. Virginia, jporter@virginia.edu      
+# Uncomment the following lines to have R clear previous work, or set a working directory
+# rm(list=ls())      
+
+# setwd("C:/users/my_name/my_dir")       
+
+
+
+options(HTTPUserAgent="EDI_CodeGen")
+	      
+
+inUrl1  <- "https://pasta.lternet.edu/package/data/eml/knb-lter-sev/330/3/76111d98712a9a18f2bc9cf65722cf69" 
+infile1 <- tempfile()
+try(download.file(inUrl1,infile1,method="curl",extra=paste0(' -A "',getOption("HTTPUserAgent"),'"')))
+if (is.na(file.size(infile1))) download.file(inUrl1,infile1,method="auto")
+
+                   
+ dt1 <-read.csv(infile1,header=F 
+          ,skip=1
+            ,sep=","  
+                ,quot='"' 
+        , col.names=c(
+                    "year",     
+                    "season",     
+                    "collection_date",     
+                    "site",     
+                    "treatment",     
+                    "transect",     
+                    "web",     
+                    "block",     
+                    "plot",     
+                    "subplot",     
+                    "quad",     
+                    "species",     
+                    "obs",     
+                    "cover",     
+                    "height",     
+                    "count",     
+                    "field_comments",     
+                    "qaqc_comments",     
+                    "field_sheet_name",     
+                    "collector",     
+                    "quadID"    ), check.names=TRUE)
+               
+unlink(infile1)
+		    
+# Fix any interval or ratio columns mistakenly read in as nominal and nominal columns read as numeric or dates read as strings
+                
+if (class(dt1$season)!="factor") dt1$season<- as.factor(dt1$season)                                   
+# attempting to convert dt1$collection_date dateTime string to R date structure (date or POSIXct)                                
+tmpDateFormat<-"%Y-%m-%d"
+tmp1collection_date<-as.Date(dt1$collection_date,format=tmpDateFormat)
+# Keep the new dates only if they all converted correctly
+if(nrow(dt1[dt1$collection_date != "",]) == length(tmp1collection_date[!is.na(tmp1collection_date)])){dt1$collection_date <- tmp1collection_date } else {print("Date conversion failed for dt1$collection_date. Please inspect the data and do the date conversion yourself.")}                                                                    
+                                
+if (class(dt1$site)!="factor") dt1$site<- as.factor(dt1$site)
+if (class(dt1$treatment)!="factor") dt1$treatment<- as.factor(dt1$treatment)
+if (class(dt1$transect)!="factor") dt1$transect<- as.factor(dt1$transect)
+if (class(dt1$web)!="factor") dt1$web<- as.factor(dt1$web)
+if (class(dt1$block)!="factor") dt1$block<- as.factor(dt1$block)
+if (class(dt1$plot)!="factor") dt1$plot<- as.factor(dt1$plot)
+if (class(dt1$subplot)!="factor") dt1$subplot<- as.factor(dt1$subplot)
+if (class(dt1$quad)!="factor") dt1$quad<- as.factor(dt1$quad)
+if (class(dt1$species)!="factor") dt1$species<- as.factor(dt1$species)
+if (class(dt1$obs)!="factor") dt1$obs<- as.factor(dt1$obs)
+if (class(dt1$cover)=="factor") dt1$cover <-as.numeric(levels(dt1$cover))[as.integer(dt1$cover) ]               
+if (class(dt1$cover)=="character") dt1$cover <-as.numeric(dt1$cover)
+if (class(dt1$height)=="factor") dt1$height <-as.numeric(levels(dt1$height))[as.integer(dt1$height) ]               
+if (class(dt1$height)=="character") dt1$height <-as.numeric(dt1$height)
+if (class(dt1$count)=="factor") dt1$count <-as.numeric(levels(dt1$count))[as.integer(dt1$count) ]               
+if (class(dt1$count)=="character") dt1$count <-as.numeric(dt1$count)
+if (class(dt1$field_comments)!="factor") dt1$field_comments<- as.factor(dt1$field_comments)
+if (class(dt1$qaqc_comments)!="factor") dt1$qaqc_comments<- as.factor(dt1$qaqc_comments)
+if (class(dt1$field_sheet_name)!="factor") dt1$field_sheet_name<- as.factor(dt1$field_sheet_name)
+if (class(dt1$collector)!="factor") dt1$collector<- as.factor(dt1$collector)
+if (class(dt1$quadID)!="factor") dt1$quadID<- as.factor(dt1$quadID)
+                
+# Convert Missing Values to NA for non-dates
+                
+dt1$season <- as.factor(ifelse((trimws(as.character(dt1$season))==trimws("NA")),NA,as.character(dt1$season)))
+dt1$site <- as.factor(ifelse((trimws(as.character(dt1$site))==trimws("NA")),NA,as.character(dt1$site)))
+dt1$treatment <- as.factor(ifelse((trimws(as.character(dt1$treatment))==trimws("NA")),NA,as.character(dt1$treatment)))
+dt1$transect <- as.factor(ifelse((trimws(as.character(dt1$transect))==trimws("NA")),NA,as.character(dt1$transect)))
+dt1$web <- as.factor(ifelse((trimws(as.character(dt1$web))==trimws("NA")),NA,as.character(dt1$web)))
+dt1$block <- as.factor(ifelse((trimws(as.character(dt1$block))==trimws("NA")),NA,as.character(dt1$block)))
+dt1$plot <- as.factor(ifelse((trimws(as.character(dt1$plot))==trimws("NA")),NA,as.character(dt1$plot)))
+dt1$subplot <- as.factor(ifelse((trimws(as.character(dt1$subplot))==trimws("NA")),NA,as.character(dt1$subplot)))
+dt1$quad <- as.factor(ifelse((trimws(as.character(dt1$quad))==trimws("NA")),NA,as.character(dt1$quad)))
+dt1$species <- as.factor(ifelse((trimws(as.character(dt1$species))==trimws("NA")),NA,as.character(dt1$species)))
+dt1$obs <- as.factor(ifelse((trimws(as.character(dt1$obs))==trimws("NA")),NA,as.character(dt1$obs)))
+dt1$cover <- ifelse((trimws(as.character(dt1$cover))==trimws("NA")),NA,dt1$cover)               
+suppressWarnings(dt1$cover <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$cover))==as.character(as.numeric("NA"))),NA,dt1$cover))
+dt1$height <- ifelse((trimws(as.character(dt1$height))==trimws("NA")),NA,dt1$height)               
+suppressWarnings(dt1$height <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$height))==as.character(as.numeric("NA"))),NA,dt1$height))
+dt1$count <- ifelse((trimws(as.character(dt1$count))==trimws("NA")),NA,dt1$count)               
+suppressWarnings(dt1$count <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$count))==as.character(as.numeric("NA"))),NA,dt1$count))
+dt1$field_comments <- as.factor(ifelse((trimws(as.character(dt1$field_comments))==trimws("NA")),NA,as.character(dt1$field_comments)))
+dt1$qaqc_comments <- as.factor(ifelse((trimws(as.character(dt1$qaqc_comments))==trimws("NA")),NA,as.character(dt1$qaqc_comments)))
+dt1$field_sheet_name <- as.factor(ifelse((trimws(as.character(dt1$field_sheet_name))==trimws("NA")),NA,as.character(dt1$field_sheet_name)))
+dt1$collector <- as.factor(ifelse((trimws(as.character(dt1$collector))==trimws("NA")),NA,as.character(dt1$collector)))
+```
+
+# Prep data
+
+```{r}
+data <- dt1
+
+# Filter to the grassland and shrubland STOMP sites, remove "EMPTY" species
+data %<>%
+  filter(site %in% c("crust_grass", "crust_creosote")) %>%
+  filter(!species == "EMPTY")
+
+nrow(data)
+
+# Get total cover of each species in each quad. Now there's one row for each species in each quad (for each year x season x site x treatment)
+data.sums <- data %>%
+  group_by(year, season, site, treatment, quadID, species) %>%
+  summarise(cover.sum = sum(cover))
+
+nrow(data.sums)
+
+# Cast data so there is a column for each species, and a row for each year x season x site x treatmetn x quadID. Fill with zeros.
+data.wide <- dcast(data.sums, year + season + site + treatment + quadID ~ species, sum, value.var = "cover.sum", fill=0)
+
+# Re-melt into long format, but with zeros now for species not found in a quad
+data.long <- melt(data.wide, id.vars = c("year", "season", "site", "treatment", "quadID"),
+     value.name = "cover", variable.name = "species", na.rm = T, factorsAsStrings = T)
+
+nrow(data.long)
+
+# Species present in dataset
+unique(data.long$species)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
