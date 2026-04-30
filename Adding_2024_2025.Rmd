@@ -28,40 +28,47 @@ new_data_long <- read.csv("~/GitHub/2025_lab_stomp/data/biocrust_2024_2025.csv",
 
 ### Load corrected fall data (grass and creosote)
 old_data_fall <- read.csv("~/GitHub/2025_lab_stomp/data/corrected.fall.data.wide.sp.csv")
-
-### Make a mask of “all-NA rows” from the ORIGINAL imported wide fall file
-id_cols_old <- names(old_data_fall)[1:7]        # treatment, year, season, site, plot, quad, quad_id
-sp_cols_old <- names(old_data_fall)[8:ncol(old_data_fall)]
-
-# Make sure the mask uses the same season type/value as fall_wide_merged
-old_unmonitored_keys_f <- old_data_fall %>%
-  dplyr::mutate(
-    unmonitored = dplyr::if_all(dplyr::all_of(sp_cols_old), ~ is.na(.))
-  ) %>%
-  dplyr::filter(unmonitored) %>%
-  dplyr::select(dplyr::all_of(id_cols_old)) %>%
-  dplyr::distinct()
-
-old_unmonitored_keys_fall <- old_unmonitored_keys_f %>%
-  dplyr::mutate(season = "Fall") %>%          # convert 3 -> "Fall" effectively
-  dplyr::mutate(season = as.character(season))
-
-
-#### Load corrected spring data (grass and creosote)
 old_data_spring <- read.csv("~/GitHub/2025_lab_stomp/data/corrected.spring.data.wide.sp.csv")
 
-# Make a mask of “all-NA rows” from the ORIGINAL imported wide spring file
-old_unmonitored_keys_sp <- old_data_spring %>%
-  dplyr::mutate(
-    unmonitored = dplyr::if_all(dplyr::all_of(sp_cols_old), ~ is.na(.))
-  ) %>%
-  dplyr::filter(unmonitored) %>%
-  dplyr::select(dplyr::all_of(id_cols_old)) %>%
-  dplyr::distinct()
+### ---------- BUILD OLD UNMONITORED MASK (PROPERLY STANDARDIZED) ----------
 
-old_unmonitored_keys_spring <- old_unmonitored_keys_sp %>%
-  dplyr::mutate(season = "Spring") %>%          # convert 2 -> "Spring" effectively
-  dplyr::mutate(season = as.character(season))
+build_old_mask <- function(old_wide_df, season_label) {
+
+  id_cols <- names(old_wide_df)[1:7]
+  sp_cols <- names(old_wide_df)[8:ncol(old_wide_df)]
+
+  old_wide_df %>%
+    mutate(
+      unmonitored = if_all(all_of(sp_cols), is.na)
+    ) %>%
+    filter(unmonitored) %>%
+    dplyr::select(all_of(id_cols)) %>%
+    distinct() %>%
+    # ---- Apply SAME standardization logic as std_long() ----
+    mutate(
+      treatment = dplyr::recode(treatment,
+                          "C" = "Ambient",
+                          "STOMP" = "Degraded"),
+site = dplyr::recode(site,
+                     "crust_grass" = "Grassland",
+                     "crust_creosote" = "Shrubland"),
+      season = season_label,
+
+      treatment = factor(treatment, levels = c("Ambient","Degraded")),
+      season    = factor(season, levels = c("Spring","Fall")),
+      site      = factor(site, levels = c("Grassland","Shrubland")),
+
+      year    = as.integer(year),
+      plot    = as.integer(plot),
+      quad    = as.integer(quad),
+      quad_id = as.factor(quad_id)
+    )
+}
+
+# Build masks
+old_unmonitored_keys_fall   <- build_old_mask(old_data_fall,   "Fall")
+old_unmonitored_keys_spring <- build_old_mask(old_data_spring, "Spring")
+
 
 ```
 
@@ -150,59 +157,7 @@ new_data_long <- new_data_long %>%
   )
 
 
-### Fix SPORO and CHAMA, remove EMPTY
-
-new_data_long %<>% filter(species != "EMPTY")
-
-sporo <- new_data_long %>%
-  filter(species %in% c("SPCO4", "SPCR", "SPFL2", "SPORO")) %>%
-  group_by(year, season, site, treatment, plot, quad, quadID) %>%
-  dplyr::summarise(cover = sum(cover, na.rm = TRUE), .groups = "drop")
-sporo$species <- "SPORO"
-nrow(sporo)
-
-chama <- new_data_long %>%
-  filter(species %in% c("CHAL11","CHAMA15","CHCHC3","CHFE3","CHAL10","CHLA10","CHRE4","CHSE7","CHSES","CHAMA","CHST8","CHSE6","CHCH5")) %>%
-  group_by(year, season, site, treatment, plot, quad, quadID) %>%
-  dplyr::summarise(cover = sum(cover, na.rm = TRUE), .groups = "drop")
-chama$species <- "CHAMA"
-nrow(chama)
-
-new_data_long %<>% dplyr::select(year, season, site, treatment, plot, quad, quadID, cover, species)
-nrow(new_data_long)
-
-
-# Change ASNU4 and ASFE2 to ASTRA
-astra <- new_data_long %>%
-  filter(species %in% c("ASNU4", "ASFE2")) %>%
-  group_by(year, season, site, treatment, plot, quad, quadID) %>%
-  dplyr::summarise(cover = sum(cover, na.rm = TRUE), .groups = "drop")
-astra$species <- "ASTRA"
-
-# Remove species that have been combined into SPORO and CHAMA and ASTRA
 new_data_long %<>%
-  filter(!species %in% c("SPCO4", "SPCR", "SPFL2", "SPORO", "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHAMA", "CHST8", "CHSE6", "CHCH5", "ASNU4", "ASFE2"))
-nrow(new_data_long)
-
-# Good
-new_data_long %>% filter(species %in% c("SPCO4", "SPCR", "SPFL2",  "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHST8", "CHSE6", "CHCH5", "ASNU4", "ASFE2"))
-
-
-
-# Merge new SPORO and CHAMA data with all the other species
-new_data_long <- dplyr::bind_rows(new_data_long, sporo, chama, astra)
-
-nrow(new_data_long)
-
-# good
-new_data_long %>% filter(species %in% c("SPCO4", "SPCR", "SPFL2",  "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHST8", "CHSE6", "CHCH5", "ASNU4", "ASFE2"))
-```
-
-
-HOLDING THIS HERE FOR NOW. SHOULD EVENTUALLY GO AT THE END.  
-Merge, and fix species.
-```{r, eval=F}
-new_data_long_aligned <- new_data_long %>%
   mutate(
     quadID = as.character(quadID)  # handle factor/character differences up front
   ) %>%
@@ -222,128 +177,60 @@ new_data_long_aligned <- new_data_long %>%
     treatment, year, season, site, plot, quad, quad_id, kartez, cover
   )
 
-template_cols <- c("treatment","year","season","site","plot","quad","quad_id","kartez","cover")
-
-fix_types <- function(df) {
-  df %>%
-    dplyr::mutate(
-      treatment = as.factor(treatment),
-      year      = as.numeric(year),
-      season    = as.character(season),
-      site      = as.factor(site),
-      plot      = as.numeric(plot),
-      quad      = as.numeric(quad),
-      quad_id   = as.character(quad_id),
-      kartez    = as.character(kartez),
-      cover     = as.numeric(cover)
-    ) %>%
-    dplyr::select(dplyr::all_of(template_cols))
-}
 
 
 
+### Fix SPORO and CHAMA, remove EMPTY
 
-std_long <- function(df) {
-  df %>%
-    dplyr::mutate(
-      treatment = as.character(treatment),
-      year      = as.integer(year),
-      season    = as.character(season),
-      site      = as.character(site),
-      plot      = as.integer(plot),
-      quad      = as.integer(quad),
-      quad_id   = as.character(quad_id),
-      kartez    = as.character(kartez),
-      cover     = as.numeric(cover)
-    ) %>%
-    dplyr::select(treatment, year, season, site, plot, quad, quad_id, kartez, cover)
-}
+new_data_long %<>% filter(kartez != "EMPTY")
 
-all_long <- dplyr::bind_rows(
-  std_long(old_data_fall_long),
-  std_long(old_data_spring_long),
-  std_long(new_data_long_aligned)
-)
+sporo <- new_data_long %>%
+  filter(kartez %in% c("SPCO4", "SPCR", "SPFL2", "SPORO")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_id) %>%
+  dplyr::summarise(cover = sum(cover, na.rm = TRUE), .groups = "drop")
+sporo$kartez <- "SPORO"
+nrow(sporo)
+
+chama <- new_data_long %>%
+  filter(kartez %in% c("CHAL11","CHAMA15","CHCHC3","CHFE3","CHAL10","CHLA10","CHRE4","CHSE7","CHSES","CHAMA","CHST8","CHSE6","CHCH5")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_id) %>%
+  dplyr::summarise(cover = sum(cover, na.rm = TRUE), .groups = "drop")
+chama$kartez <- "CHAMA"
+nrow(chama)
+
+new_data_long %<>% dplyr::select(year, season, site, treatment, plot, quad, quad_id, cover, kartez)
+nrow(new_data_long)
 
 
+# Change ASNU4 and ASFE2 to ASTRA
+astra <- new_data_long %>%
+  filter(kartez %in% c("ASNU4", "ASFE2")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_id) %>%
+  dplyr::summarise(cover = sum(cover, na.rm = TRUE), .groups = "drop")
+astra$kartez <- "ASTRA"
 
-summary(all_long)
+# Remove species that have been combined into SPORO and CHAMA and ASTRA
+new_data_long %<>%
+  filter(!kartez %in% c("SPCO4", "SPCR", "SPFL2", "SPORO", "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHAMA", "CHST8", "CHSE6", "CHCH5", "ASNU4", "ASFE2"))
+nrow(new_data_long)
+
+# Good
+new_data_long %>% filter(kartez %in% c("SPCO4", "SPCR", "SPFL2",  "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHST8", "CHSE6", "CHCH5", "ASNU4", "ASFE2"))
+
+
+
+# Merge new SPORO and CHAMA data with all the other species
+new_data_long <- dplyr::bind_rows(new_data_long, sporo, chama, astra)
+
+nrow(new_data_long)
 
 # good
-all_long %>% filter(kartez %in% c("SPCO4", "SPCR", "SPFL2",  "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHST8", "CHSE6", "CHCH5", "ASNU4", "ASFE2"))
-
-# Get all unique species names
-sort(unique(all_long$kartez))
-
-# Per Mel, replace old species names with updated species names
-all_long %<>%
-  mutate(
-    kartez = dplyr::recode(
-      kartez,
-      "CHAMA" = "CHAMA15", # any Chamaesyce that was left at the genus level
-      "DRCUC" = "DRCU", # without variety
-      "ECFEF3" = "ECFE", # without subspecies
-      "GASUN" = "OESU4", # taxonomic change
-      "HYFIC" = "HYFI", # without subspecies
-      "LAOCO" = "LAOC3", # taxonomic change
-      "MAPIP" = "MAPI", # same thing, use MAPI
-      "MUAR" = "MUAR2", # Mel double checked and the MUAR that was recorded in 2023 should also be MUAR2
-      "PSTAT" = "PSTA", # same thing, use PSTA
-      "SEFLF" = "SEFL3", # taxonomic change
-      "TRRA" = "TRBE" # "There's still some discussion about TRRA if it exists at the SEV or not, we were unable to get good samples to ID but we are leaning more towards TRBE."
-    )
-  )
-
-all_long %>% filter(kartez %in% c("SPCO4", "SPCR", "SPFL2",  "CHAL11", "CHAMA", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHST8", "CHSE6", "CHCH5", "ASNU4", "ASFE2"))
-
-old_data_spring_long %<>%
-  mutate(
-    kartez = dplyr::recode(
-      kartez,
-      "CHAMA" = "CHAMA15", # any Chamaesyce that was left at the genus level
-      "DRCUC" = "DRCU", # without variety
-      "ECFEF3" = "ECFE", # without subspecies
-      "GASUN" = "OESU4", # taxonomic change
-      "HYFIC" = "HYFI", # without subspecies
-      "LAOCO" = "LAOC3", # taxonomic change
-      "MAPIP" = "MAPI", # same thing, use MAPI
-      "MUAR" = "MUAR2", # Mel double checked and the MUAR that was recorded in 2023 should also be MUAR2
-      "PSTAT" = "PSTA", # same thing, use PSTA
-      "SEFLF" = "SEFL3", # taxonomic change
-      "TRRA" = "TRBE" # "There's still some discussion about TRRA if it exists at the SEV or not, we were unable to get good samples to ID but we are leaning more towards TRBE."
-    )
-  )
-
-
-
-old_data_fall_long %<>%
-  mutate(
-    kartez = dplyr::recode(
-      kartez,
-      "CHAMA" = "CHAMA15", # any Chamaesyce that was left at the genus level
-      "DRCUC" = "DRCU", # without variety
-      "ECFEF3" = "ECFE", # without subspecies
-      "GASUN" = "OESU4", # taxonomic change
-      "HYFIC" = "HYFI", # without subspecies
-      "LAOCO" = "LAOC3", # taxonomic change
-      "MAPIP" = "MAPI", # same thing, use MAPI
-      "MUAR" = "MUAR2", # Mel double checked and the MUAR that was recorded in 2023 should also be MUAR2
-      "PSTAT" = "PSTA", # same thing, use PSTA
-      "SEFLF" = "SEFL3", # taxonomic change
-      "TRRA" = "TRBE" # "There's still some discussion about TRRA if it exists at the SEV or not, we were unable to get good samples to ID but we are leaning more towards TRBE."
-    )
-  )
+new_data_long %>% filter(kartez %in% c("SPCO4", "SPCR", "SPFL2",  "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHST8", "CHSE6", "CHCH5", "ASNU4", "ASFE2"))
 ```
 
 
-
-
-
-
-
+De-duplicate new data
 ```{r}
-
-
 # --- helper: collapse duplicates (sum) but keep "all NA" as NA ---
 dedup_sum_keepNA <- function(df) {
   df %>%
@@ -354,7 +241,26 @@ dedup_sum_keepNA <- function(df) {
     )
 }
 
-# --- helper: wide by kartez ---
+# --- De-duplicate within each season (add up all individuals of the same species in a quad x year) ---
+new_data_long_nodup <- dedup_sum_keepNA(new_data_long)
+#old_spring_long_nodup <- dedup_sum_keepNA(old_data_spring_long)
+#old_fall_long_nodup <- dedup_sum_keepNA(old_data_fall_long)
+
+nrow(new_data_long)
+nrow(new_data_long_nodup)
+```
+
+Split new data by season, pivot wide
+```{r}
+# --- 1) Split into Spring / Fall long ---
+new_spring_long_nodup <- new_data_long_nodup %>%
+  dplyr::filter(season == "Spring")
+
+new_fall_long_nodup <- new_data_long_nodup %>%
+  dplyr::filter(season == "Fall")
+
+
+# --- 3) Pivot each season to wide, fill with 0s ---
 to_wide_by_kartez <- function(df_long) {
   df_long %>%
     tidyr::pivot_wider(
@@ -364,329 +270,597 @@ to_wide_by_kartez <- function(df_long) {
     )
 }
 
-# --- 1) Split into Spring / Fall long ---
-spring_long <- all_long %>%
-  dplyr::filter(season == "Spring")
+new_spring_wide <- to_wide_by_kartez(new_spring_long_nodup)
+new_fall_wide   <- to_wide_by_kartez(new_fall_long_nodup)
+old_spring_wide <- to_wide_by_kartez(old_data_spring_long)
+old_fall_wide <- to_wide_by_kartez(old_data_fall_long)
 
-fall_long <- all_long %>%
-  dplyr::filter(season == "Fall")
+# Check for no duplicates left (should be all 1s)
+new_spring_long_nodup %>%
+  dplyr::count(treatment, year, season, site, plot, quad, quad_id, kartez) %>%
+  dplyr::summarise(max_n = max(n))
 
-# --- 2) De-duplicate within each season (no duplicates in long) ---
-spring_long_nodup <- dedup_sum_keepNA(spring_long)
-fall_long_nodup   <- dedup_sum_keepNA(fall_long)
-old_spring_long_nodup <- dedup_sum_keepNA(old_data_spring_long)
-old_fall_long_nodup <- dedup_sum_keepNA(old_data_fall_long)
+new_fall_long_nodup %>%
+  dplyr::count(treatment, year, season, site, plot, quad, quad_id, kartez) %>%
+  dplyr::summarise(max_n = max(n))
 
+old_data_spring_long %>%
+  dplyr::count(treatment, year, season, site, plot, quad, quad_id, kartez) %>%
+  dplyr::summarise(max_n = max(n))
+
+old_data_fall_long %>%
+  dplyr::count(treatment, year, season, site, plot, quad, quad_id, kartez) %>%
+  dplyr::summarise(max_n = max(n))
+
+```
+
+
+Merge old and new (for each season) - FIX
+```{r}
+std_long <- function(df) {
+  df %>%
+    mutate(
+      treatment = case_when(
+        treatment %in% c("C","STOMP") ~ dplyr::recode(treatment, "C"="Ambient","STOMP"="Degraded"),
+        TRUE ~ as.character(treatment)
+      ),
+      season = case_when(
+        season %in% c("2","3") ~ dplyr::recode(as.character(season), "2"="Spring","3"="Fall"),
+        TRUE ~ as.character(season)
+      ),
+      site = case_when(
+        site %in% c("crust_grass","crust_creosote") ~ dplyr::recode(site, "crust_grass"="Grassland","crust_creosote"="Shrubland"),
+        TRUE ~ as.character(site)
+      ),
+
+      treatment = factor(treatment, levels = c("Ambient", "Degraded")),
+      season    = factor(season, levels = c("Spring", "Fall")),
+      site      = factor(site, levels = c("Grassland", "Shrubland")),
+
+      year    = as.integer(year),
+      plot    = as.integer(plot),
+      quad    = as.integer(quad),
+      quad_id = as.character(quad_id),
+      kartez  = as.character(kartez),
+      cover   = as.numeric(cover)
+    ) %>%
+    dplyr::select(treatment, year, season, site, plot, quad, quad_id, kartez, cover)
+}
+
+all_long <- dplyr::bind_rows(
+  std_long(old_data_fall_long),
+  std_long(old_data_spring_long),
+  std_long(new_spring_long_nodup),
+  std_long(new_fall_long_nodup)
+)
+
+summary(all_long)
+```
+
+Change SPHAE to SPHA
+```{r}
 ### Before going wide, look at fall quads with SPHAE and see if there are previous Sphaeralcea species. Unless the new observation is very small cover = likely to be a seedling, or if Sphaeralcea was previously absent from the quadrat (= new species observed).
 
 # Find quads where SPHAE is ever present
-quad_ids_sphae <- fall_long_nodup %>%
+quad_ids_sphae <- all_long %>%
+  filter(season == "Fall") %>%
   dplyr::filter(kartez == "SPHAE", !is.na(cover), cover > 0) %>%
   dplyr::distinct(quad_id) %>%
   dplyr::pull(quad_id)
 
 # Pull the full time series for those quads (all species, all years)
-fall_sphae_ts_long <- fall_long_nodup %>%
+sphae_ts_long <- all_long %>%
   dplyr::filter(quad_id %in% quad_ids_sphae) %>%
   dplyr::arrange(quad_id, year, kartez)
 
 # Look at each quad's time series: For all, change "SPHAE" to "SPHA"
-fall_sphae_ts_long %>% filter(quad_id == quad_ids_sphae[1]) %>%
+sphae_ts_long %>% filter(quad_id == quad_ids_sphae[1]) %>%
   filter(str_starts(kartez, "SPH"))
 
-fall_sphae_ts_long %>% filter(quad_id == quad_ids_sphae[2]) %>%
+sphae_ts_long %>% filter(quad_id == quad_ids_sphae[2]) %>%
   filter(str_starts(kartez, "SPH"))
 
-fall_sphae_ts_long %>% filter(quad_id == quad_ids_sphae[3]) %>%
+sphae_ts_long %>% filter(quad_id == quad_ids_sphae[3]) %>%
   filter(str_starts(kartez, "SPH"))
 
-fall_sphae_ts_long %>% filter(quad_id == quad_ids_sphae[4]) %>%
+sphae_ts_long %>% filter(quad_id == quad_ids_sphae[4]) %>%
   filter(str_starts(kartez, "SPH"))
 
-fall_sphae_ts_long %>% filter(quad_id == quad_ids_sphae[5]) %>%
+sphae_ts_long %>% filter(quad_id == quad_ids_sphae[5]) %>%
   filter(str_starts(kartez, "SPH"))
 
-fall_sphae_ts_long %>% filter(quad_id == quad_ids_sphae[6]) %>%
+sphae_ts_long %>% filter(quad_id == quad_ids_sphae[6]) %>%
   filter(str_starts(kartez, "SPH"))
 
-fall_long_nodup %<>%
+all_long %<>%
   dplyr::mutate(
     kartez = dplyr::recode(kartez, "SPHAE" = "SPHA")
   )
-
-
-
-# --- 3) Pivot each season to wide ---
-spring_wide <- to_wide_by_kartez(spring_long_nodup)
-fall_wide   <- to_wide_by_kartez(fall_long_nodup)
-old_spring_wide <- to_wide_by_kartez(old_spring_long_nodup)
-old_fall_wide <- to_wide_by_kartez(old_fall_long_nodup)
-
-# Check for no duplicates left (should be all 1s)
-spring_long_nodup %>%
-  dplyr::count(treatment, year, season, site, plot, quad, quad_id, kartez) %>%
-  dplyr::summarise(max_n = max(n))
-
-fall_long_nodup %>%
-  dplyr::count(treatment, year, season, site, plot, quad, quad_id, kartez) %>%
-  dplyr::summarise(max_n = max(n))
-
-old_spring_long_nodup %>%
-  dplyr::count(treatment, year, season, site, plot, quad, quad_id, kartez) %>%
-  dplyr::summarise(max_n = max(n))
-
-old_fall_long_nodup %>%
-  dplyr::count(treatment, year, season, site, plot, quad, quad_id, kartez) %>%
-  dplyr::summarise(max_n = max(n))
-
-
-### NEW
-
-
-
-## complete each dataset based on shared species list
-
-# define keys columns
-keys <- c("treatment","year","season","site","plot","quad","quad_id")
-
-# shared species list
-species_all_fall <- union(unique(old_fall_long_std$kartez), unique(fall_long_nodup$kartez))
-
-species_all_spring <- union(unique(old_spring_long_std$kartez), unique(spring_long_nodup$kartez))
-
-# Fill missing species with 0's. Later I will re-fill the old data with NAs based on the masks I created above. ADD CODE TO SEE IF THIS IS ALL NECESSARY. 
-old_complete_fall <- old_fall_long_std %>%
-  group_by(across(all_of(keys))) %>%
-  complete(kartez = species_all_fall, fill = list(cover = 0)) %>%
-  ungroup()
-
-new_complete_fall <- fall_long_nodup %>%
-  group_by(across(all_of(keys))) %>%
-  complete(kartez = species_all_fall, fill = list(cover = 0)) %>%
-  ungroup()
-
-old_complete_spring <- old_spring_long_std %>%
-  group_by(across(all_of(keys))) %>%
-  complete(kartez = species_all_spring, fill = list(cover = 0)) %>%
-  ungroup()
-
-new_complete_spring <- spring_long_nodup %>%
-  group_by(across(all_of(keys))) %>%
-  complete(kartez = species_all_spring, fill = list(cover = 0)) %>%
-  ungroup()
-
-
-### merge (prefer new if overlap, but there shouldn't be overlap)
-fall_long_merged <- dplyr::full_join(
-  dplyr::rename(old_complete_fall, cover_old = cover),
-  dplyr::rename(new_complete_fall, cover_new = cover),
-  by = c(keys, "kartez")
-) %>%
-  dplyr::mutate(cover = dplyr::coalesce(cover_new, cover_old, 0)) %>%
-  dplyr::select(dplyr::all_of(keys), kartez, cover)
-
-fall_wide_merged <- fall_long_merged %>%
-  pivot_wider(names_from = kartez, values_from = cover, values_fill = 0)
-
-spring_long_merged <- dplyr::full_join(
-  dplyr::rename(old_complete_spring, cover_old = cover),
-  dplyr::rename(new_complete_spring, cover_new = cover),
-  by = c(keys, "kartez")
-) %>%
-  dplyr::mutate(cover = dplyr::coalesce(cover_new, cover_old, 0)) %>%
-  dplyr::select(dplyr::all_of(keys), kartez, cover)
-
-spring_wide_merged <- spring_long_merged %>%
-  pivot_wider(names_from = kartez, values_from = cover, values_fill = 0)
-
-
-
-# force correct rows back to NA
-id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
-sp_cols_fall <- setdiff(names(fall_wide_merged), id_cols)
-sp_cols_spring <- setdiff(names(spring_wide_merged), id_cols)
-
-fall_wide_merged <- fall_wide_merged %>%
-  dplyr::left_join(
-    old_unmonitored_keys_fall %>% dplyr::mutate(unmonitored = TRUE),
-    by = id_cols
-  ) %>%
-  dplyr::mutate(
-    unmonitored = dplyr::coalesce(unmonitored, FALSE),
-    dplyr::across(
-      dplyr::all_of(sp_cols_fall),
-      ~ dplyr::if_else(unmonitored, NA_real_, .)
-    )
-  ) %>%
-  dplyr::select(-unmonitored)
-
-spring_wide_merged <- spring_wide_merged %>%
-  dplyr::left_join(
-    old_unmonitored_keys_spring %>% dplyr::mutate(unmonitored = TRUE),
-    by = id_cols
-  ) %>%
-  dplyr::mutate(
-    unmonitored = dplyr::coalesce(unmonitored, FALSE),
-    dplyr::across(
-      dplyr::all_of(sp_cols_spring),
-      ~ dplyr::if_else(unmonitored, NA_real_, .)
-    )
-  ) %>%
-  dplyr::select(-unmonitored)
-
-
-# Look for plot x year with more than 2 quads monitored
-id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
-sp_cols_fall <- setdiff(names(fall_wide_merged), id_cols)
-sp_cols_spring <- setdiff(names(spring_wide_merged), id_cols)
-
-
-plot_year_over2_fall <- fall_wide_merged %>%
-  mutate(
-    monitored = rowSums(!is.na(dplyr::across(dplyr::all_of(sp_cols_fall)))) > 0
-  ) %>%
-  group_by(site, treatment, season, plot, year) %>%
-  summarise(
-    n_quads_monitored = sum(monitored),
-    n_quads_total     = dplyr::n(),   # includes the NA rows
-    .groups = "drop"
-  ) %>%
-  filter(n_quads_monitored > 2) %>%
-  arrange(desc(n_quads_monitored), site, treatment, plot, year)
-
-plot_year_over2_fall
-
-plot_year_over2_spring <- spring_wide_merged %>%
-  mutate(
-    monitored = rowSums(!is.na(dplyr::across(dplyr::all_of(sp_cols_spring)))) > 0
-  ) %>%
-  group_by(site, treatment, season, plot, year) %>%
-  summarise(
-    n_quads_monitored = sum(monitored),
-    n_quads_total     = dplyr::n(),   # includes the NA rows
-    .groups = "drop"
-  ) %>%
-  filter(n_quads_monitored > 2) %>%
-  arrange(desc(n_quads_monitored), site, treatment, plot, year)
-
-plot_year_over2_spring
-
-
-
-
-
-# Check dimentions
-dim(old_fall_wide)
-dim(fall_wide)
-
-dim(old_spring_wide)
-dim(spring_wide)
-
-
-# Names in the new fall data that aren't in old fall data
-setdiff(names(fall_wide), names(old_fall_wide))
-
-# Names in the old fall data that aren't in the new fall data
-setdiff(names(old_fall_wide), names(fall_wide))
-
-setdiff(names(spring_wide), names(old_spring_wide))
-setdiff(names(old_spring_wide), names(spring_wide))
-
-# Pivot longer. Do not fill unobserved species x quads with 0
-fall_long_final <- fall_wide %>%
-  pivot_longer(
-    cols = -c(treatment, year, season, site, plot, quad, quad_id),
-    names_to = "kartez",
-    values_to = "cover"
-  )
-
-spring_long_final <- spring_wide %>%
-  pivot_longer(
-    cols = -c(treatment, year, season, site, plot, quad, quad_id),
-    names_to = "kartez",
-    values_to = "cover"
-  )
-
-
 ```
 
-
-Add NA rows when the wrong quad was monitored. 
+Separate by season
 ```{r}
-# Need to fix these plots where quad 4 was monitored 
-new_data_long %>% filter(quad == 4) %>% arrange(season, year, site, plot, quad)
+all_spring_long <- all_long %>% filter(season == "Spring")
+all_fall_long <- all_long %>% filter(season == "Fall")
+```
 
-new_data_long %>% filter(plot == 29) %>% distinct(quad)
-
-### Make quads 1 and 4 to have numbers (and 2 and 3 to have NAs) in plot 29. For all other plots, make quads 1 and 3 to have numbers (and 2 and 4 to have NAs).
-
-## Fall
-fall_long_final <- new_data_long %>%
-  dplyr::mutate(
-    cover = dplyr::case_when(
-      plot == 29 & quad %in% c(2, 3) ~ NA_real_,
-      plot != 29 & quad %in% c(2, 4) ~ NA_real_,
-      TRUE ~ cover
-    )
+Go wide. There are some rows that have some NAs here for some reason, but I'll fix that in the next section.
+```{r}
+# Fall
+all_fall_wide <- all_fall_long %>%
+  pivot_wider(
+    names_from  = kartez,
+    values_from = cover,
+    values_fill = 0
   )
 
-# Sanity check
-sanity_check_fall <- fall_long_final %>%
-  dplyr::group_by(year, plot, quad) %>%
-  dplyr::summarise(
-    all_na = all(is.na(cover)),
-    any_non_na = any(!is.na(cover)),
-    .groups = "drop"
-  ) %>%
-  dplyr::mutate(
-    expected_all_na = dplyr::case_when(
-      plot == 29 & quad %in% c(2, 3) ~ TRUE,
-      plot != 29 & quad %in% c(2, 4) ~ TRUE,
-      TRUE ~ FALSE
-    ),
-    matches_expectation = (all_na == expected_all_na)
+# Spring
+all_spring_wide <- all_spring_long %>%
+  pivot_wider(
+    names_from  = kartez,
+    values_from = cover,
+    values_fill = 0
   )
+```
 
-# should be empty
-sanity_check_fall %>%
-  dplyr::filter(!matches_expectation)
+Make sure I have 4 quads for each plot x year in 2024 and 2025. Then I'll change the unmonitored ones to 0.
+```{r}
+new_years <- 2024:2025
 
-## Spring
-spring_long_final <- new_data_long %>%
-  dplyr::mutate(
-    cover = dplyr::case_when(
-      plot == 29 & quad %in% c(2, 3) ~ NA_real_,
-      plot != 29 & quad %in% c(2, 4) ~ NA_real_,
-      TRUE ~ cover
-    )
-  )
+ensure_four_quads <- function(df, sp_cols) {
 
-# Sanity check
-sanity_check_spring <- spring_long_final %>%
-  dplyr::group_by(year, plot, quad) %>%
-  dplyr::summarise(
-    all_na = all(is.na(cover)),
-    any_non_na = any(!is.na(cover)),
-    .groups = "drop"
-  ) %>%
-  dplyr::mutate(
-    expected_all_na = dplyr::case_when(
-      plot == 29 & quad %in% c(2, 3) ~ TRUE,
-      plot != 29 & quad %in% c(2, 4) ~ TRUE,
-      TRUE ~ FALSE
-    ),
-    matches_expectation = (all_na == expected_all_na)
-  )
+  df %>%
+    group_by(site, treatment, plot, year) %>%
+    tidyr::complete(
+      quad = 1:4,
+      fill = as.list(setNames(rep(0, length(sp_cols)), sp_cols))
+    ) %>%
+    ungroup() %>%
+    mutate(
+      season = first(season),  # keep season column coherent if present
 
-# should be empty
-sanity_check_spring %>%
-  dplyr::filter(!matches_expectation)
+      site_code = case_when(
+        site == "Grassland" ~ "crust_grass",
+        site == "Shrubland" ~ "crust_creosote",
+        TRUE ~ as.character(site)
+      ),
+      trt_code = case_when(
+        treatment == "Ambient"  ~ "C",
+        treatment == "Degraded" ~ "STOMP",
+        TRUE ~ as.character(treatment)
+      ),
+      quad_id = paste(site_code, trt_code, plot, quad, sep = "_")
+    ) %>%
+    dplyr::select(-site_code, -trt_code)
+}
+
+# Split old vs new years
+spring_old <- all_spring_wide %>% filter(year < 2024)
+spring_new <- all_spring_wide %>% filter(year %in% new_years)
+
+fall_old <- all_fall_wide %>% filter(year < 2024)
+fall_new <- all_fall_wide %>% filter(year %in% new_years)
+
+
+# Only enforce 4 quads on new years
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols_fall <- setdiff(names(all_fall_wide), id_cols)
+sp_cols_spring <- setdiff(names(all_spring_wide), id_cols)
+
+fall_new <- ensure_four_quads(fall_new, sp_cols_fall)
+spring_new <- ensure_four_quads(spring_new, sp_cols_spring)
+
+# Recombine
+all_spring_wide <- bind_rows(spring_old, spring_new) %>%
+  arrange(site, treatment, plot, year, quad)
+
+
+all_fall_wide <- bind_rows(fall_old, fall_new) %>%
+  arrange(site, treatment, plot, year, quad)
+
 ```
 
 
 
+Force unmonitored quads to NA. Use the mask I created for the old data. For the new data, plot 29 should have NAs for quads 2 and 3, while all other plots should have NAs for quads 1 and 4.
+```{r}
+old_years <- 2014:2023
+new_years <- 2024:2025
+
+### Spring
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols_spring <- setdiff(names(all_spring_wide), id_cols)
+
+# 1) Attach old mask
+all_spring_wide <- all_spring_wide %>%
+  left_join(
+    old_unmonitored_keys_spring %>% mutate(old_unmonitored = TRUE),
+    by = id_cols
+  ) %>%
+  mutate(old_unmonitored = coalesce(old_unmonitored, FALSE))
+
+# 2. Apply conditional masking
+all_spring_wide <- all_spring_wide %>%
+  mutate(
+    new_unmonitored = case_when(
+      year %in% new_years & plot == 29 & quad %in% c(2,3) ~ TRUE,
+      year %in% new_years & plot != 29 & quad %in% c(2,4) ~ TRUE,
+      TRUE ~ FALSE
+    ),
+    
+    final_unmonitored = case_when(
+      year %in% old_years ~ old_unmonitored,
+      year %in% new_years ~ new_unmonitored,
+      TRUE ~ FALSE
+    )
+  ) %>%
+  mutate(
+    across(all_of(sp_cols_spring),
+           ~ if_else(final_unmonitored, NA_real_, .))
+  ) %>%
+  dplyr::select(-old_unmonitored, -new_unmonitored, -final_unmonitored)
 
 
+### Fall
+sp_cols_fall <- setdiff(names(all_fall_wide), id_cols)
+
+all_fall_wide <- all_fall_wide %>%
+  left_join(
+    old_unmonitored_keys_fall %>% mutate(old_unmonitored = TRUE),
+    by = id_cols
+  ) %>%
+  mutate(old_unmonitored = coalesce(old_unmonitored, FALSE)) %>%
+  mutate(
+    new_unmonitored = case_when(
+      year %in% new_years & plot == 29 & quad %in% c(2,3) ~ TRUE,
+      year %in% new_years & plot != 29 & quad %in% c(2,4) ~ TRUE,
+      TRUE ~ FALSE
+    ),
+    
+    final_unmonitored = case_when(
+      year %in% old_years ~ old_unmonitored,
+      year %in% new_years ~ new_unmonitored,
+      TRUE ~ FALSE
+    )
+  ) %>%
+  mutate(
+    across(all_of(sp_cols_fall),
+           ~ if_else(final_unmonitored, NA_real_, .))
+  ) %>%
+  dplyr::select(-old_unmonitored, -new_unmonitored, -final_unmonitored)
+
+
+### Sanity check - SPRING
+
+# Rows should be all NA or no NA (no partial NA)
+spring_check <- all_spring_wide %>%
+  mutate(
+    n_na = rowSums(is.na(across(all_of(sp_cols_spring)))),
+    n_sp = length(sp_cols_spring),
+    type = case_when(
+      n_na == 0 ~ "no_NA",
+      n_na == n_sp ~ "all_NA",
+      TRUE ~ "partial_NA"
+    )
+  ) %>%
+  count(type)
+
+# Should see "all_NA" and "no_NA". No "partial_NA".
+spring_check
+
+# Check for 2 quads each year
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols_spring <- setdiff(names(all_spring_wide), id_cols)
+
+spring_quad_check <- all_spring_wide %>%
+  mutate(
+    monitored = !if_all(all_of(sp_cols_spring), is.na)
+  ) %>%
+  group_by(site, treatment, plot, year) %>%
+  summarise(
+    n_monitored = sum(monitored),
+    .groups = "drop"
+  )
+
+# Want n_monitored = 2 for all years
+spring_quad_check %>%
+  filter(year %in% 2014:2023) %>%
+  count(n_monitored)
+
+spring_quad_check %>%
+  filter(year %in% 2024:2025) %>%
+  count(n_monitored)
+
+# Confirm no partial NAs left - want only TRUE
+all_spring_wide %>%
+  mutate(
+    n_na = rowSums(is.na(across(all_of(sp_cols_spring)))),
+    n_sp = length(sp_cols_spring)
+  ) %>%
+  count(n_na == 0 | n_na == n_sp)
+
+
+### Sanity check - Fall
+
+# Rows should be all NA or no NA (no partial NA)
+fall_check <- all_fall_wide %>%
+  mutate(
+    n_na = rowSums(is.na(across(all_of(sp_cols_fall)))),
+    n_sp = length(sp_cols_fall),
+    type = case_when(
+      n_na == 0 ~ "no_NA",
+      n_na == n_sp ~ "all_NA",
+      TRUE ~ "partial_NA"
+    )
+  ) %>%
+  count(type)
+
+# Should see "all_NA" and "no_NA". No "partial_NA".
+fall_check
+
+# Check for 2 quads each year
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols_fall <- setdiff(names(all_fall_wide), id_cols)
+
+fall_quad_check <- all_fall_wide %>%
+  mutate(
+    monitored = !if_all(all_of(sp_cols_fall), is.na)
+  ) %>%
+  group_by(site, treatment, plot, year) %>%
+  summarise(
+    n_monitored = sum(monitored),
+    .groups = "drop"
+  )
+
+# Want n_monitored = 2 for all years
+fall_quad_check %>%
+  filter(year %in% 2014:2023) %>%
+  count(n_monitored)
+
+fall_quad_check %>%
+  filter(year %in% 2024:2025) %>%
+  count(n_monitored)
+
+# Confirm no partial NAs left - want only TRUE
+all_fall_wide %>%
+  mutate(
+    n_na = rowSums(is.na(across(all_of(sp_cols_fall)))),
+    n_sp = length(sp_cols_fall)
+  ) %>%
+  count(n_na == 0 | n_na == n_sp)
+```
+
+Check which quads were monitored each year in plot 29 
+```{r}
+# Spring
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols_spring <- setdiff(names(all_spring_wide), id_cols)
+
+plot29_spring_monitoring <- all_spring_wide %>%
+  filter(plot == 29) %>%
+  mutate(
+    monitored = !if_all(all_of(sp_cols_spring), is.na)
+  ) %>%
+  dplyr::select(site, treatment, year, quad, quad_id, monitored) %>%
+  arrange(site, treatment, year, quad)
+
+plot29_spring_monitoring
+
+
+# Fall
+sp_cols_fall <- setdiff(names(all_fall_wide), id_cols)
+
+plot29_fall_monitoring <- all_fall_wide %>%
+  filter(plot == 29) %>%
+  mutate(
+    monitored = !if_all(all_of(sp_cols_fall), is.na)
+  ) %>%
+  dplyr::select(site, treatment, year, quad, quad_id, monitored) %>%
+  arrange(site, treatment, year, quad)
+
+plot29_fall_monitoring
+```
+
+Fix season and quad_id columns for the fake rows I created
+```{r}
+# Spring
+all_spring_wide <- all_spring_wide %>%
+  mutate(season = factor("Spring", levels = c("Spring","Fall")))
+
+all_spring_wide <- all_spring_wide %>%
+  mutate(
+    # convert site back to original code
+    site_code = case_when(
+      site == "Grassland" ~ "crust_grass",
+      site == "Shrubland" ~ "crust_creosote"
+    ),
+    
+    # convert treatment back to original code
+    trt_code = case_when(
+      treatment == "Ambient" ~ "C",
+      treatment == "Degraded" ~ "STOMP"
+    ),
+    
+    quad_id = paste(site_code, trt_code, plot, quad, sep = "_")
+  ) %>%
+  dplyr::select(-site_code, -trt_code)
+
+all_fall_wide %>% filter(is.na(quad_id))
+
+
+# Fall
+all_fall_wide <- all_fall_wide %>%
+  mutate(season = factor("Fall", levels = c("Spring","Fall")))
+
+all_fall_wide <- all_fall_wide %>%
+  mutate(
+    # convert site back to original code
+    site_code = case_when(
+      site == "Grassland" ~ "crust_grass",
+      site == "Shrubland" ~ "crust_creosote"
+    ),
+    
+    # convert treatment back to original code
+    trt_code = case_when(
+      treatment == "Ambient" ~ "C",
+      treatment == "Degraded" ~ "STOMP"
+    ),
+    
+    quad_id = paste(site_code, trt_code, plot, quad, sep = "_")
+  ) %>%
+  dplyr::select(-site_code, -trt_code)
+
+all_fall_wide %>% filter(is.na(quad_id))
+```
+
+
+Look for rows that all are 0
+```{r}
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols_spring <- setdiff(names(all_spring_wide), id_cols)
+sp_cols_fall   <- setdiff(names(all_fall_wide),   id_cols)
+
+spring_all_zero <- all_spring_wide %>%
+  mutate(
+    all_zero = if_all(all_of(sp_cols_spring), ~ . == 0)
+  ) %>%
+  filter(all_zero) %>%
+  dplyr::select(all_of(id_cols)) %>%
+  arrange(site, treatment, plot, year, quad)
+
+spring_all_zero
+nrow(spring_all_zero)
+
+fall_all_zero <- all_fall_wide %>%
+  mutate(
+    all_zero = if_all(all_of(sp_cols_fall), ~ . == 0)
+  ) %>%
+  filter(all_zero) %>%
+  dplyr::select(all_of(id_cols)) %>%
+  arrange(site, treatment, plot, year, quad)
+
+fall_all_zero
+nrow(fall_all_zero)
+```
+
+```{r}
+check_plot <- function(df, id_cols, plot_num) {
+  sp_cols <- setdiff(names(df), id_cols)
+  df %>%
+    dplyr::filter(plot == plot_num, year %in% 2024:2025) %>%
+    dplyr::mutate(monitored = !dplyr::if_all(dplyr::all_of(sp_cols), is.na)) %>%
+    dplyr::select(site, treatment, season, year, plot, quad, quad_id, monitored) %>%
+    dplyr::arrange(site, treatment, year, quad)
+}
+
+check_plot(all_spring_wide, id_cols, 29)
+check_plot(all_spring_wide, id_cols, 25)
+```
+I convinced myself these are real ecological zeros, or empty quads.
+
+
+Fix species names from Mel
+```{r}
+rename_species_wide <- function(df, id_cols) {
+  
+  sp_map <- c(
+    "CHAMA"  = "CHAMA15",
+    "DRCUC"  = "DRCU",
+    "ECFEF3" = "ECFE",
+    "GASUN"  = "OESU4",
+    "HYFIC"  = "HYFI",
+    "LAOCO"  = "LAOC3",
+    "MAPIP"  = "MAPI",
+    "MUAR"   = "MUAR2",
+    "PSTAT"  = "PSTA",
+    "SEFLF"  = "SEFL3",
+    "TRRA"   = "TRBE"
+  )
+  
+  for (old in names(sp_map)) {
+    
+    new <- sp_map[[old]]
+    
+    if (old %in% names(df)) {
+      
+      # if target column already exists, sum them
+      if (new %in% names(df)) {
+        a <- df[[new]]
+        b <- df[[old]]
+        
+        df[[new]] <- ifelse(
+          is.na(a) & is.na(b),
+          NA_real_,
+          rowSums(cbind(a, b), na.rm = TRUE)
+        )
+      } else {
+        names(df)[names(df) == old] <- new
+      }
+      
+      # remove old column if still present
+      df[[old]] <- NULL
+    }
+  }
+  
+  df
+}
+
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+
+all_spring_wide <- rename_species_wide(all_spring_wide, id_cols)
+all_fall_wide   <- rename_species_wide(all_fall_wide,   id_cols)
+
+# Sanity check
+intersect(names(all_spring_wide), c("CHAMA","DRCUC","ECFEF3","GASUN","HYFIC",
+                                    "LAOCO","MAPIP","MUAR","PSTAT","SEFLF","TRRA"))
+```
+
+Drop rows that are all NAs before going long and exporting (so lab doesn't need to deal with the NA rows)
+```{r}
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+
+all_spring_wide_clean <- all_spring_wide %>%
+  filter(!if_all(-all_of(id_cols), is.na))
+
+all_fall_wide_clean <- all_fall_wide %>%
+  filter(!if_all(-all_of(id_cols), is.na))
+
+
+# Sanity check - number of rows dropped
+nrow(all_spring_wide) - nrow(all_spring_wide_clean)
+nrow(all_fall_wide)   - nrow(all_fall_wide_clean)
+
+# Confirm no NA rows remain
+all_spring_wide_clean %>%
+  filter(if_all(-all_of(id_cols), is.na)) %>%
+  nrow()
+
+all_fall_wide_clean %>%
+  filter(if_all(-all_of(id_cols), is.na)) %>%
+  nrow()
+```
+
+
+Go to long form
+```{r}
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+
+all_spring_long2 <- all_spring_wide_clean %>%
+  tidyr::pivot_longer(
+    cols = -all_of(id_cols),
+    names_to = "kartez",
+    values_to = "cover"
+  ) %>%
+  dplyr::arrange(site, treatment, plot, year, quad, kartez)
+
+all_fall_long2 <- all_fall_wide_clean %>%
+  tidyr::pivot_longer(
+    cols = -all_of(id_cols),
+    names_to = "kartez",
+    values_to = "cover"
+  ) %>%
+  dplyr::arrange(site, treatment, plot, year, quad, kartez)
+```
 
 
 
@@ -696,13 +870,45 @@ Write csv for long and wide format for each season
 #write.csv(fall_wide, "./data/fall_wide_sp_allyears.csv", row.names = FALSE)
 #write.csv(spring_wide, "./data/spring_wide_sp_allyears.csv", row.names = FALSE)
 
-write.csv(fall_long_final, "./data/fall_long_allyears.csv", row.names = FALSE)
-write.csv(spring_long_final, "./data/spring_long_allyears.csv", row.names = FALSE)
+write.csv(all_fall_long2, "./data/fall_long_allyears.csv", row.names = FALSE)
+write.csv(all_spring_long2, "./data/spring_long_allyears.csv", row.names = FALSE)
 
-write.csv(fall_wide_merged, "./data/fall_wide_sp_allyears.csv")
-
+write.csv(all_fall_wide_clean, "./data/fall_wide_sp_allyears.csv")
+write.csv(all_spring_wide_clean, "./data/spring_wide_sp_allyears.csv")
 ```
 
+
+
+```{r}
+all_spring_wide_clean %>% filter(year == 2014, plot == 28) %>% distinct(quad)
+```
+
+Make supplemental table showing which quads were monitored when. These are the years x plots x seasons where quads other than 1 and 3 were monitored
+```{r}
+# Fall
+quads_by_plot_year_fall <- all_fall_long2 %>%
+  distinct(plot, year, quad) %>%
+  group_by(plot, year) %>%
+  summarise(
+    quads_monitored = paste(sort(unique(quad)), collapse = ", "),
+    n_quads = n_distinct(quad),
+    .groups = "drop"
+  )
+
+quads_by_plot_year_fall %>% filter(quads_monitored != "1, 3")
+
+# Spring
+quads_by_plot_year_spring <- all_spring_long2 %>%
+  distinct(plot, year, quad) %>%
+  group_by(plot, year) %>%
+  summarise(
+    quads_monitored = paste(sort(unique(quad)), collapse = ", "),
+    n_quads = n_distinct(quad),
+    .groups = "drop"
+  )
+
+quads_by_plot_year_spring %>% filter(quads_monitored != "1, 3")
+```
 
 
 
