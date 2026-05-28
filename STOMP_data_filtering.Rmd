@@ -9,7 +9,7 @@ output: html_document
 
 # Load data
 
-```{r, message=F}
+```{r, message=F, warning=F}
 rm(list = ls())
 
 libraries <- c("tidyverse", "magrittr", "lme4", "car", "emmeans", "glmmTMB", "DHARMa", "multcomp", "ggeffects", "nlme", "MuMIn", "visreg", "ggsignif", "sjPlot", "sjmisc", "reshape2", "plyr")
@@ -19,7 +19,7 @@ setwd("~/GitHub/2025_lab_stomp")
 ```
 
 Load data from EDI
-```{r}
+```{r, eval=F}
 # Package ID: knb-lter-sev.330.3 Cataloging System:https://pasta.edirepository.org.
 # Data set title: SEV-LTER quadrat plant species cover and height all sites and experiments.
 # Data set creator:  Lauren Baur - University of New Mexico 
@@ -130,57 +130,34 @@ dt1$field_sheet_name <- as.factor(ifelse((trimws(as.character(dt1$field_sheet_na
 dt1$collector <- as.factor(ifelse((trimws(as.character(dt1$collector))==trimws("NA")),NA,as.character(dt1$collector)))
 ```
 
+Load local copy
+```{r}
+dt1 <- read.csv("./data/sev330_NPP_quad_cover_height.csv")
+```
+
+
 # Prep data
 
 ```{r}
 data <- dt1
 
-# Filter to the grassland and shrubland STOMP sites, remove "EMPTY" species
-data %>%
-  filter(site %in% c("crust_grass", "crust_creosote"))
-
-nrow(data)
-
-# These are different plants in a quad
-data %>% 
-  group_by(species, quadID, year, season) %>%
-  dplyr::summarise(n = n()) %>%
-  filter(n > 1)
+# Filter to the grassland and shrubland STOMP sites
+data %>% filter(site %in% c("crust_grass", "crust_creosote"))
 
 # Calculate total cover for all individuals in a quad
 data$obscover <- data$cover * data$count 
-data$quad_id <- as.factor(paste(data$site, data$treatment, data$plot, data$quad, sep="_")) # This quad_id leaves out things like web and block that aren't relevant for stomp data
+data$quad_id <- as.factor(paste(data$site, data$treatment, data$plot, data$quad, sep="_")) 
 
-catch <- data %>% 
-  filter(quad_id == "crust_grass_C_25_1") %>%
-  filter(year == 2018) %>%
-  filter(season == 2) %>%
-  filter(species == "BOER4")
-
-
-nrow(data)
-
-
-# Get total cover of each species in each quad. Now there's one row for each species in each quad (for each year x season x site x treatment)
+# Get total cover of each species in each quad. This results in one row for each species in each quad (for each year x season x site x treatment)
 quadcover <- ddply(data, c("year", "season", "site", "treatment", "plot", "quad", "quad_id", "species"), summarise,
                    quadcover = sum(obscover))
 
-nrow(quadcover)
-
-quadcover %>% 
-  group_by(species, quad_id, year, season) %>%
-  dplyr::summarise(n = n()) %>%
-  filter(n > 1)
-
 write.csv(quadcover, "~/GitHub/2025_lab_stomp/data/quadcover.csv", row.names = F)
 
-# Cast data so there is a column for each species, and a row for each year x season x site x treatmetn x quadID. Fill with zeros.
+# Cast data so there is a column for each species, and a row for each year x season x site x treatment x quad_id Fill with zeros.
 data.wide <- dcast(quadcover, year + season + site + treatment + plot + quad + quad_id ~ species, sum, value.var = "quadcover", fill=0)
 
-  # Checking if a quad was empty before removing these (gut check for a question in "STOMP_data_merging.RMD")
-  data.wide %>% filter(quad_id == "crust_creosote_C_20_3" & year == 2020)
-
-# Remove "EMPTY" after casting
+# Remove "EMPTY" column
 data.wide$EMPTY <- NULL
 
 # There's an NA in LATR2 column - change to 0
@@ -188,8 +165,6 @@ sum(is.na(data.wide$LATR2))
 
 data.wide %<>%
   mutate(LATR2 = replace_na(LATR2, value = 0))
-
-sum(is.na(data.wide$LATR2))
 
 
 ### Write wide format
@@ -200,32 +175,15 @@ write.csv(data.wide, "~/GitHub/2025_lab_stomp/data/data.stomp.2018-2023.wide.csv
 data.long <- melt(data.wide, id.vars = c("year", "season", "site", "treatment", "plot", "quad", "quad_id"),
      value.name = "quadcover", variable.name = "species", na.rm = T, factorsAsStrings = T)
 
-names(data.wide)
-names(data.long)
-
-nrow(data.long)
-
 # Species present in dataset
 unique(data.long$species)
 
 # Number of quads
 length(unique(data.long$quad_id))
 
-data.long %>% filter(species == "CHAMA15")
-
 ### Write long format
 write.csv(data.long, "~/GitHub/2025_lab_stomp/data/data.stomp.2018-2023.long.csv", row.names = F)
 ```
-
-Testing that I can read the sheet in
-```{r, message=F, eval=F}
-library(googlesheets4)
-
-test.read <- read_sheet("https://docs.google.com/spreadsheets/d/1Al3Nun5yWGBwM6rUYVQiUKRvDOq3EJSkLTElWZ4O-zI/edit?gid=1087477164#gid=1087477164")
-
-head(test.read)
-```
-
 
 
 

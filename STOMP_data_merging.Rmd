@@ -1,0 +1,2228 @@
+---
+title: "STOMP_data_merging"
+author: "Lana Bolin"
+date: '`r Sys.Date()`'
+output: 
+  html_document: 
+    toc: yes
+---
+
+Prepping pre-2018 data, and merging with post-2018 data (which were prepped in STOMP_data_filtering.Rmd)
+
+# Pre-show
+
+## Parking downhill
+
+* 
+
+
+
+## To Do
+
+* 
+
+DONE: 
+
+* For too high: look at means in our data vs. means in core sites and see if they're comparable. If they're not, we can consider doing analyses without 2013 included
+  * DONE. Leave as is per Jenn 10/22/2025.
+* For "too high" ASTRA: Email field crew and ask what are top 2-3 species that could be confused with ASTRA. FIRST: See if there was ASFE2 in the core site. If it's there, change ASTRA to ASFE2.
+  * 
+* Ask field crew for common mis-ids of SEFLF. Once we hear back, look at those in the core sites and we can change our ID to that new species.
+  * 
+* For all "missing": check data entry, if that's good we can do an interpolation - SENT TO JENN 10/21/25
+  * DONE
+* "offset years": 0's leading up to big shifts when the field crew took over should be NAs. Same in the reverse: change late 0's to NAs.
+  *
+* I need to know which quadrat was monitored in each plot for how many years. Group by plot and quadrat (not quad_id), see which plots have different 2 and 4. Then figure out when even quads were monitored and when odds were monitored, to figure out where NAs should be filled in. Look across whole dataset (not just jumps). In years where 1 and 3 were monitored fewer years than they should, those other years need to get filled in with NAs for all species in the quad. 
+  * 
+
+
+## Load data
+
+```{r, message=F}
+rm(list = ls())
+
+libraries <- c("tidyverse", "magrittr", "lme4", "car", "emmeans", "glmmTMB", "DHARMa", "multcomp", "ggeffects", "nlme", "MuMIn", "visreg", "ggsignif", "sjPlot", "sjmisc", "reshape2", "googlesheets4")
+invisible(lapply(libraries, require, character.only = T))
+
+setwd("~/GitHub/2025_lab_stomp")
+
+# Filtered data from 2018-2023
+data.late <- read.csv("~/GitHub/2025_lab_stomp/data/data.stomp.2018-2023.long.csv", stringsAsFactors = T)
+#data.late <- read_sheet("https://docs.google.com/spreadsheets/d/1iQfqszvTpJY4PgPkkckLQt4Z5lEUDYdLN7-XyzI3i5E/edit?gid=1665389948#gid=1665389948")
+
+data.late  %>% filter(year == 2020, plot == 15, season == 2) %>% filter(quadcover>0)
+
+
+# Pre 2018 data from creosote. This is in wide format, with columns for each species.
+data.creosote <- read.csv("./data/BSC_creosote.csv", stringsAsFactors = T)
+```
+
+Load biomass data from EDI and make CHAMA and SPORO species designations
+```{r, eval=F}
+# Load the dataset. Each row is a quadrat.
+options(HTTPUserAgent="EDI_CodeGen")
+          
+inUrl1  <- "https://pasta.lternet.edu/package/data/eml/knb-lter-sev/331/3/cb45bdfc2edb50ef242d29f16055ab5b" 
+infile1 <- tempfile()
+try(download.file(inUrl1,infile1,method="curl",extra=paste0(' -A "',getOption("HTTPUserAgent"),'"')))
+if (is.na(file.size(infile1))) download.file(inUrl1,infile1,method="auto")
+
+mass <-read.csv(infile1,header=F 
+                , stringsAsFactors = T
+                ,skip=1
+                ,sep=","  
+                ,quot='"' 
+                , col.names=c(
+                    "site",     
+                    "year",     
+                    "season",     
+                    "date",     
+                    "web",     
+                    "transect",     
+                    "block",     
+                    "plot",     
+                    "subplot",     
+                    "quad",     
+                    "treatment",     
+                    "kartez",     
+                    "genus",     
+                    "sp.epithet",     
+                    "family",     
+                    "LifeHistory",     
+                    "PhotoPath",     
+                    "FunctionalGroup",     
+                    "cover",     
+                    "volume",     
+                    "biomass.BM",     
+                    "biomass.BIM",     
+                    "SiteCluster",     
+                    "MetStation",     
+                    "season.precip",     
+                    "GDD",     
+                    "SPEI.comp"    ), check.names=TRUE)
+               
+unlink(infile1)
+```
+
+Read in local copy
+```{r}
+mass <- read.csv("./data/sev331_quadrat_plant_species_biomass.csv")
+```
+
+```{r}
+# Create a unique identifier for quadrat
+mass$quad_ID <-
+  as.factor(
+    paste(
+      mass$site,
+      mass$web,
+      mass$transect,
+      mass$treatment,
+      mass$block,
+      mass$plot,
+      mass$subplot,
+      mass$quad,
+      sep = "_"))
+
+mass.sporo <- mass %>%
+  filter(kartez %in% c("SPCO4", "SPCR", "SPFL2", "SPORO")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_ID) %>%
+  dplyr::summarise(cover = sum(cover),
+                   biomass.BM = sum(biomass.BM))
+mass.sporo$kartez <- "SPORO"
+
+mass.chama <- mass %>%
+  filter(kartez %in% c("CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHAMA", "CHST8")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_ID) %>%
+  dplyr::summarise(cover = sum(cover),
+                   biomass.BM = sum(biomass.BM))
+mass.chama$kartez <- "CHAMA"
+
+# Merge new SPORO and CHAMA data with all the other species
+mass2 <- mass %>% dplyr::select(year, season, site, treatment, plot, quad, quad_ID, cover, biomass.BM, kartez)
+
+mass2 <- union(mass2, mass.sporo)
+mass2 <- union(mass2, mass.chama)
+
+
+core_black <- mass2 %>% filter(site == "core_black")
+core_creosote <- mass2 %>% filter(site == "core_creosote")
+```
+
+
+# Merge early creosote site data with later data - DONE
+
+```{r}
+### Change "Time" column to "year" and "season"
+
+# Remove "y" from the beginning of the string (yearseas)
+data.creosote$yearseas <- sub("^y", "", data.creosote$Time)
+
+# If yearseas ends in .5, assign it to "fall" in a new column called "season"; if it doesn't end in .5, assign it to "spring"
+data.creosote %<>%
+  mutate(season = if_else(grepl("\\.5$", yearseas), "3", "2"), # 2 is spring, 3 is fall per EDI
+         year = as.integer(sub("\\.5$", "", yearseas)))
+
+# Add site = crust_creosote
+data.creosote$site <- "crust_creosote"
+
+# Change the names of the treatment levels to match late data
+levels(data.creosote$Treatment) <- c("C", "STOMP")
+
+# Make "quad_id" column
+data.creosote$quad_id <- as.factor(paste(data.creosote$site, data.creosote$Treatment, data.creosote$Plot, data.creosote$Quadrat, sep="_"))
+
+# Change column names of columns I need
+data.creosote %<>%
+  dplyr::rename(treatment = Treatment,
+         plot = Plot,
+         quad = Quadrat)
+
+# Select the columns I need 
+data.creosote.wide <- data.creosote %>%
+  dplyr::select(-c(X, Sample, Time, Site, forb, grass, shrub, C3, C4, CAM, annual, perennial, ap, Richness, ShannonH, InvSimpson, Total, seedmass_cwm, sla_cwm, cn_cwm, avg.height, max.height, d15N_cwm, d13C_cwm, sdmc_cwm, rdmc_cwm, Treatment_start, yearseas)) 
+
+# Filter out 2018 - both seasons of 2018 are in data.late
+nrow(data.creosote.wide)
+data.creosote.wide <- data.creosote.wide %>% filter(year != 2018)
+nrow(data.creosote.wide)
+
+# Melt into long format, but with zeros now for species not found in a quad
+data.creosote.long <- melt(data.creosote.wide, id.vars = c("year", "season", "site", "treatment", "plot", "quad", "quad_id"),
+     value.name = "quadcover", variable.name = "species", factorsAsStrings = T)
+
+# Merge creosote data with EDI data
+data.creosote.long$season <- as.integer(data.creosote.long$season)
+data.late$plot <- as.character(data.late$plot)
+data.creosote.long$plot <- as.character(data.creosote.long$plot)
+
+data.merge.long <- union(data.late, data.creosote.long)
+
+# Species in the data
+unique(data.merge.long$species)
+
+nrow(data.merge.long)
+```
+
+
+# Merge grassland data - DONE
+
+We'd need to do some additional hand corrections on the grassland data before we merge that in... the BSC_corrected_26000.csv has the data lined up to look at each species in each cell of each quadrat over time, I was doing that visually to try to correct errors where it was clear we changed what we called a species over time... it's a slog.  
+
+The all NAs are cases where the 10cm X 10cm square had nothing in it - retained to preserve all the squares over time
+```{r}
+data.grass <- read.csv("./data/BSC_corrected_26000.csv", stringsAsFactors = T)
+
+# Filter to just site == "G" because I already merged the other site (creosote)
+data.grass %<>% filter(Site == "G")
+
+# Remove "BARE"
+data.grass %<>%
+  filter(Species != "BARE") %>%
+  dplyr::select(-X)
+
+
+
+# Melt into long format
+data.grass.melt <- melt(data.grass, id.vars = c("Site", "Plot", "Quadrat", "Row", "Column", "Species"),
+     value.name = "quadcover", variable.name = "Year", factorsAsStrings = T)
+
+
+# data.grass.melt has a percentage for each 100th of the plot. So divide quadcover by 100 to get each row's percentage in the whole plot
+data.grass.melt$quadcover <- data.grass.melt$quadcover / 100
+
+# Look at histograms of quadcover. These look good (grass is still at the level of 100th of a quad)
+hist(data.grass.melt$quadcover)
+hist(data.late$quadcover)
+
+# Remove "X" from the beginning of the string (yearseas)
+data.grass.melt$yearseas <- sub("^X", "", data.grass.melt$Year)
+
+# If yearseas ends in .5, assign it to "fall" in a new column called "season"; if it doesn't end in .5, assign it to "spring"
+data.grass.melt %<>%
+  mutate(season = if_else(grepl("\\.5$", yearseas), "3", "2"), # 2 is spring, 3 is fall per EDI
+         year = as.integer(sub("\\.5$", "", yearseas)))
+
+# Remove old "Year" column
+data.grass.melt$Year <- NULL
+
+nrow(data.grass.melt)
+
+
+# Change column names of columns I need
+data.grass.melt %<>%
+  dplyr::rename(species = Species,
+         plot = Plot,
+         quad = Quadrat,
+         site = Site)
+
+### Add treatment column to data.grass.melt
+
+# Get treatments for each plot from data.late
+data.late.trts <- data.late %>% 
+  dplyr::select(plot, treatment) %>% 
+  group_by(plot) %>%
+  slice_head(n = 1)
+
+# Merge treatments into data.grass.melt
+data.grass.melt$plot <- as.character(data.grass.melt$plot)
+data.grass.melt <- left_join(data.grass.melt, data.late.trts, by = "plot")
+
+### Make a quad_id column. 
+
+# Check site levels
+unique(data.grass.melt$site)
+unique(data.merge.long$site)
+data.grass.melt$site <- "crust_grass"
+
+# Check treatment levels
+unique(data.grass.melt$treatment)
+unique(data.merge.long$treatment)
+
+# Check plot levels
+unique(data.grass.melt$plot)
+unique(data.merge.long$plot)
+
+# Check quad levels
+unique(data.grass.melt$quad)
+unique(data.merge.long$quad)
+
+# Make quad_id column in early grass data
+data.grass.melt$quad_id <- as.factor(paste(data.grass.melt$site, data.grass.melt$treatment, data.grass.melt$plot, data.grass.melt$quad, sep="_"))
+
+
+# Get total cover of each species in each quad. Now there's one row for each species in each quad (for each year x season x site x treatment) 
+data.grass.long <- data.grass.melt %>%
+  dplyr::group_by(year, season, site, plot, quad, quad_id, treatment, species) %>%
+  dplyr::summarise(
+    quadcover = sum(quadcover),
+    .groups = "drop"
+  )
+
+hist(data.grass.long$quadcover)
+nrow(data.grass.long)
+nrow(data.grass.melt)
+
+# Re-cast with a column for each year
+data.grass.wide <- dcast(data.grass.long, treatment + species + season + site + plot + quad + quad_id ~ year, sum, value.var = "quadcover", fill=0)
+
+# Put columns in the same order for merge
+data.merge.long %<>% # This is the dataset with the late data and the early Creosote data
+  relocate(species, season, site, treatment, plot, quad, quad_id, 
+year, quadcover)
+
+data.grass.long %<>%
+  relocate(species, season, site, treatment, plot, quad, quad_id, 
+year, quadcover)
+
+unique(data.grass.long$species)
+
+# Filter out 2018 from the early data - we have it in the late data, and it's causing duplicate rows
+data.grass.long %<>% filter(year != 2018)
+
+# Merge
+data.grass.long$season <- as.integer(data.grass.long$season)
+data.full.long <- union(data.merge.long, data.grass.long)
+data.full.long$year <- as.numeric(data.full.long$year)
+data.full.long %<>% mutate_if(is.character, as.factor)
+
+data.full.long %>%
+  group_by(species, quad_id, year, season) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n>1)
+
+
+summary(data.full.long)
+
+data.full.long %>% group_by(site, year) %>% dplyr::summarise(n=n()) %>% print(n=Inf)
+
+hist(data.full.long$quadcover)
+
+```
+
+Combine as:
+
+* CHAMA:  CHAL11  CHAMA15 CHCHC3  CHFE3   CHLA10  CHRE4   CHSE7   CHSES
+* SPORO:  SPCO4   SPCR    SPFL2
+
+```{r}
+sporo <- data.full.long %>%
+  filter(species %in% c("SPCO4", "SPCR", "SPFL2", "SPORO")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_id) %>%
+  dplyr::summarise(quadcover = sum(quadcover))
+sporo$species <- "SPORO"
+nrow(sporo)
+
+chama <- data.full.long %>%
+  filter(species %in% c("CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHAMA", "CHST8")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_id) %>%
+  dplyr::summarise(quadcover = sum(quadcover))
+chama$species <- "CHAMA"
+nrow(chama)
+
+data.full.long %<>% dplyr::select(year, season, site, treatment, plot, quad, quad_id, quadcover, species)
+nrow(data.full.long)
+
+# Remove species that have been combined into SPORO and CHAMA
+data.full.long %<>%
+  filter(!species %in% c("SPCO4", "SPCR", "SPFL2", "SPORO", "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHAMA", "CHST8"))
+nrow(data.full.long)
+
+# Merge new SPORO and CHAMA data with all the other species
+data.full.long <- union(data.full.long, sporo)
+data.full.long <- union(data.full.long, chama)
+
+nrow(data.full.long)
+
+
+
+# Remove "FORB_SEEDLING", "GRASS_SEEDLING", "FORB_UNKNOWN"
+data.full.long %<>%
+  filter(!species %in% c("FORB_SEEDLING", "GRASS_SEEDLING", "FORB_UNKNOWN"))
+
+nrow(data.full.long)
+unique(data.full.long$species)
+
+summary(data.full.long)
+```
+
+
+
+Cast into wide format, with a column for each year
+```{r}
+data.full.wide <- dcast(data.full.long, treatment + species + season + site + plot + quad + quad_id ~ year, sum, value.var = "quadcover", fill=0)
+
+# Change ASNU4 and ASFE2 to ASTRA
+data.full.wide <- data.full.wide %>%
+  mutate(species = if_else(species %in% c("ASTRA", "ASNU4", "ASFE2"), "ASTRA", species))
+
+### In each quad_id x season, add up the biomass in each year for all ASTRA rows
+# 1. Collapse ASTRA rows within each quad_id
+year_cols <- c("2013","2014","2015","2016","2017",
+               "2018","2019","2020","2021","2022","2023")
+
+astra_collapsed <- data.full.wide %>%
+  filter(species == "ASTRA") %>%
+  group_by(quad_id, season) %>%
+  dplyr::summarise(
+    # keep non-year columns as their first value
+    across(-all_of(year_cols), ~ dplyr::first(.x)),
+    # sum year columns
+    across(all_of(year_cols), ~ sum(.x, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+others <- data.full.wide %>%
+  filter(species != "ASTRA")
+
+df_new <- bind_rows(others, astra_collapsed) %>%
+  arrange(quad_id, species)
+
+# It worked!
+data.full.wide %>% filter(species == "ASTRA", quad_id == "crust_creosote_C_12_1")
+df_new %>% filter(species == "ASTRA", quad_id == "crust_creosote_C_12_1")
+
+data.full.wide <- df_new
+
+nrow(data.full.wide)
+unique(data.full.wide$species)
+summary(data.full.wide)
+
+write.csv(data.full.wide, "./data/data.full.wide.csv", row.names = FALSE)
+```
+
+# Look for jump between 2017 and 2018
+
+Check for a jump in species ID between 2017 (when Rudgers lab was surveying) and 2018 (when field crew started surveying).  
+Do separately for fall and spring (season 2 vs. 3)
+
+```{r}
+# Detect switch from non-zero in any year prior to 2017, to zero in any year after 2018
+data.full.wide$nonzero_to_zero <- data.full.wide$`2013` != 0 | data.full.wide$`2014` != 0 | data.full.wide$`2015` != 0 | data.full.wide$`2016` != 0 | data.full.wide$`2017` != 0 & data.full.wide$`2018` == 0  & data.full.wide$`2019` == 0  & data.full.wide$`2020` == 0  & data.full.wide$`2021` == 0  & data.full.wide$`2022` == 0  & data.full.wide$`2023` == 0 
+
+# Detect switch from zero in any year prior to 2017, to non-zero in any year after 2018
+data.full.wide$zero_to_nonzero <- data.full.wide$`2013` == 0 & data.full.wide$`2014` == 0 & data.full.wide$`2015` == 0 & data.full.wide$`2016` == 0 & data.full.wide$`2017` == 0 & data.full.wide$`2018` != 0 | data.full.wide$`2019` != 0 | data.full.wide$`2020` != 0 |  data.full.wide$`2021` != 0 | data.full.wide$`2022` != 0 | data.full.wide$`2023` != 0 
+```
+
+
+# Corrections
+
+## Spring corrections
+Write a csv for Jenn that has all rows where I detected a switch from non-zero in any year prior to 2017, to zero in any year after 2018, or vice versa.
+```{r}
+spring.jumps <- data.full.wide %>%
+  filter(season == 2) %>% # spring
+  filter(nonzero_to_zero == TRUE | zero_to_nonzero == TRUE) %>%
+  arrange(quad_id) %>%
+  dplyr::select(-treatment, -season, -site, -plot, -quad, -nonzero_to_zero, -zero_to_nonzero) %>%
+  as_tibble()
+
+nrow(spring.jumps)
+
+write.csv(spring.jumps, "./data/spring_jumps.csv", row.names = FALSE)
+```
+
+
+### "y"
+
+In notes “y” means that the time series is most likely to be accurate as is, e.g., overall cover was low for the species, and it’s blips in and out over time did not seem unreasonable. in some cases a species may be been recorded in only one year, but in very low abundance that is unlikely to affect anything except for species richness, and there is no way to detect is this was an error, so leave it as is.
+```{r}
+spring.jumps2 <- read.csv("./data/spring_jumps_JR.csv", stringsAsFactors = T)
+
+nrow(spring.jumps2)
+
+### In notes column, “y” means that the time series is most likely to be accurate as is, e.g., overall cover was low for the species. Remove those from the fall.jumps data. Goes from 1227 rows to 308.
+spring.jumps2 %<>%
+  filter(notes != "y")
+
+nrow(spring.jumps2)
+```
+
+### "resolution" column corrections
+
+resolution column: these are the notes on what we need to correct by hand in the original datafile to resolve the issues; would start here, make these corrections first
+```{r}
+# Make a dataset with only these rows (i.e., that have something in the "resolution" column)
+resolution.spring <- spring.jumps2 %>%
+  filter(!is.na(resolution) & resolution != "")
+nrow(resolution.spring)
+
+# Save a copy for merging (I need to match these rows to the rows in "data.full.wide", and remove these old rows from "data.full.wide" before merging in the corrected ones)
+resolution.spring.merge <- resolution.spring
+
+
+### Make corrections!
+
+# First arrange by resolution so I can do things in batches
+resolution.spring %<>% arrange(resolution)
+
+# Row 1: add 20.55 for 2013
+resolution.spring[1, ]$X2013 <- resolution.spring[1, ]$X2013 + 20.55
+
+# Row 2: change 2016 to GUSA2
+resolution.spring[2, ]$X2016 <- 0
+
+  # LANA: I'm adding a row to the main "fall.jumps2" dataset for GUSA2 with 11 biomass in 2016 in this quad
+  spring.jumps2.addition <- data.frame(species = "GUSA2", quad_id = "crust_creosote_STOMP_7_1", X2013 = 0, X2014 = 0, X2015 = 0 , X2016 = 11, X2017 = 0, X2018 = 0, X2019 = 0, X2020 = 0, X2021 = 0, X2022 = 0, X2023 = 0, notes = "", functional_group = "", year = "", issue = "", resolution = "", new = "", plot_no = "", quad_no = "")
+  
+  spring.jumps2.addition$plot_no <- as.integer(spring.jumps2.addition$plot_no)
+  spring.jumps2.addition$quad_no <- as.integer(spring.jumps2.addition$quad_no)
+  resolution.spring.merge <- union(resolution.spring.merge, spring.jumps2.addition)
+  
+# Row 3: change to ARPU9
+resolution.spring[3, ]$species <- "ARPU9"
+  
+# Row 4: change to BOBA2
+resolution.spring[3, ]$species <- "BOBA2"
+
+# Row 5 & 6: change to BOGR2
+resolution.spring[5:6, ]$species <- "BOGR2"
+  
+# Rows 7 & 8: change to DAPU7
+resolution.spring[7:8, ]$species <- "DAPU7"
+  
+# Row 9: change to ECFEF3
+resolution.spring[9, ]$species <- "ECFEF3"
+  
+# Rows 10 & 11: change to GUSA2
+resolution.spring[10:11, ]$species <- "GUSA2"
+  
+# Row 12 & 13: change to LAOCO
+resolution.spring[12:13, ]$species <- "LAOCO"
+  
+# Row 14: change to LATR2 - all obs
+resolution.spring[14, ]$species <- "LATR2"
+  
+# Row 15 & 16: change to LEFE
+resolution.spring[15:16, ]$species <- "LEFE"
+  
+# Row 17: change to LIPU4
+resolution.spring[17, ]$species <- "LIPU4"
+  
+# Row 18 & 19: change to MAPIP
+resolution.spring[18:19, ]$species <- "MAPIP"
+  
+# Row 20: change to MAPIP based on paper data - add to MAPIP already in plot (row is removed at end of code chunk to preserve row numbers)
+spring.jumps2[spring.jumps2$quad_id == "crust_grass_C_33_1" & spring.jumps2$species == "MAPIP", ]$X2016 <- 0.08 + 26.93
+
+# Row 21: change to MELE
+resolution.spring[21, ]$species == "MELE"
+
+# Rows 22 & 23: change to MUAR2
+resolution.spring[22:23, ]$species == "MUAR2"
+  
+# Row 24: change to MUPO2
+resolution.spring[24, ]$species == "MUPO2"
+  
+# Row 25: change to OPMA8, fill missing years of 2017-2018 with avg 
+resolution.spring[25, ]$species <- "OPMA8"
+resolution.spring[25, ]$X2017 <- mean(c(2, 2.5, 11.25))
+resolution.spring[25, ]$X2018 <- mean(c(2, 2.5, 11.25))
+
+# Rows 26-32: change to PHCR
+resolution.spring[26:32, ]$species <- "PHCR"
+  
+# Rows 33-39: change to PLJA
+resolution.spring[33:39, ]$species <- "PLJA"
+  
+# Row 40: change to SATR12
+resolution.spring[40, ]$species <- "SATR12"
+  
+# Row 41: change to SCBR2
+resolution.spring[41, ]$species <- "SCBR2"
+  
+# Row 42: change to SPLE
+resolution.spring[42, ]$species <- "SPLE"
+  
+# Rows 43-49: change to SPORO
+resolution.spring[43:49, ]$species <- "SPORO"
+  
+# Rows 50-52: change to SPPO6
+resolution.spring[50:52, ]$species <- "SPPO6"
+  
+# Row 53: check for other forbs to change to (LANA: I didn't do anything for this one) - LEAVE IT
+resolution.spring[53, ]
+  
+# Rows 54-57: check if also high in core site - NOPE. LEAVE IT.
+resolution.spring[54:57, ]
+
+ggplot(core_creosote %>% filter(kartez == "SOEL" & season == "spring"), aes(x = year, y = biomass.BM)) +
+    geom_point() +
+    ggtitle("SOEL")
+
+# Row 58: do nothing
+  
+# Row 59: fill 2013 with "1.2"
+resolution.spring[59, ]$X2013 <- 1.2
+  
+# Row 60: fill 2013 with "1.74"
+resolution.spring[60, ]$X2013 <- 1.74
+  
+# Row 61: fill 2013 with 2014 value and fill 2016 with average of 2015 & 2017
+resolution.spring[61, ]$X2013 <- resolution.spring[61, ]$X2014
+resolution.spring[61, ]$X2016 <- mean(c(resolution.spring[61, ]$X2015, resolution.spring[61, ]$X2017))
+  
+# Row 62: fill 2017 with value from 2018 - should not be zero; should be NA from 2014-2016 (LANA: I'll make these quads NA later when I fix all the quads that weren't monitored in certain years)
+resolution.spring[62, ]$X2017 <- resolution.spring[62, ]$X2018
+  
+# Row 63: fill 2021 with avg of 2020 & 2022
+resolution.spring[63, ]$X2021 <- mean(c(resolution.spring[63, ]$X2020, resolution.spring[63, ]$X2022))
+  
+# Rows 64-71: fill with average of bracketing years (LANA: For rows where 2023 was missing I filled 2023 with the 2022 value)
+resolution.spring[64, ]$X2016 <- mean(c(resolution.spring[64, ]$X2015, resolution.spring[64, ]$X2017))
+resolution.spring[65, ]$X2019 <- mean(c(resolution.spring[65, ]$X2018, resolution.spring[65, ]$X2020))
+resolution.spring[66, ]$X2016 <- mean(c(resolution.spring[66, ]$X2015, resolution.spring[66, ]$X2018))
+resolution.spring[66, ]$X2017 <- mean(c(resolution.spring[66, ]$X2015, resolution.spring[66, ]$X2018))
+resolution.spring[67, ]$X2017 <- mean(c(resolution.spring[67, ]$X2016, resolution.spring[67, ]$X2018))
+resolution.spring[67, ]$X2019 <- mean(c(resolution.spring[67, ]$X2018, resolution.spring[67, ]$X2020))
+resolution.spring[68, ]$X2023 <- resolution.spring[68, ]$X2022
+resolution.spring[69, ]$X2023 <- resolution.spring[69, ]$X2022
+resolution.spring[70, ]$X2019 <- mean(c(resolution.spring[70, ]$X2018, resolution.spring[70, ]$X2020)) # LANA: I think the year is a typo (says 2021 in the notes, but I think it should be 2019)
+resolution.spring[71, ]$X2023 <- resolution.spring[71, ]$X2022
+  
+# Row 72: fill with bracketing years
+resolution.spring[72, ]$X2015 <- mean(c(resolution.spring[72, ]$X2014, resolution.spring[72, ]$X2016))
+  
+# Row 73: fix misspelling *CHLA10, then lump into CHAMA
+  # LANA: Done at the end of this chunk
+  
+# Row 74: fixed
+  
+# Row 75: fixed with ARPU9
+  
+# Row 76: fixed with GUSA2
+  
+# Row 77-78: is CHAMA high in core site 2014? (LANA: I think line 78 should be "is EUEX4 too high in core site 2014?"). LEAVE IT
+resolution.spring[77:78, ]
+
+ggplot(core_creosote %>% filter(kartez == "CHAMA" & season == "spring"), aes(x = year, y = biomass.BM)) +
+    geom_point() +
+    ggtitle("CHAMA")
+
+ggplot(core_creosote %>% filter(kartez == "EUEX4" & season == "spring"), aes(x = year, y = biomass.BM)) +
+    geom_point() +
+    ggtitle("EUEX4")
+  
+# Row 79-80: keep as is
+  
+# Row 81-87: leave as is
+  
+# Row 163-165: lump with CHAMA
+  # LANA: Done at end of chunk
+  
+# Row 177: reduce to 10.52 in 2018 based on paper data
+resolution.spring[177, ]$X2018 <- 10.52
+  
+# Row 178: remove - not in paper data
+resolution.spring[178, ]$X2013 <- 0
+
+# Row 179: remove 20.55 for 2013
+resolution.spring[179, ]$X2013 <- 0
+  
+# Row 180: remove 25.5 in 2013 set to zero - not recorded for fall this year, likely a typo
+resolution.spring[180, ]$X2013 <- 0
+  
+# Row 181: remove 30 from 2014 - no LATR2 recorded on paper data
+resolution.spring[181, ]$X2014 <- 0  
+
+# Row 182: remove 60
+resolution.spring[182, ]$X2014 <- 0
+  
+# Row 184: search for other grass to change to. LANA - WHAT DO I DO? LEAVE IT
+resolution.spring[184, ]
+  
+# Row 185-186: should be NA after 2016: LANA - WILL CHANGE BELOW WHEN I DO QUADS
+  
+# Row 187-189: should be NA after 2013: LANA - WILL CHANGE BELOW WHEN I DO QUADS
+  
+# Row 190-2015: should be NA except 2013 and 2014: LANA - WILL CHANGE BELOW WHEN I DO QUADS
+  
+# Row 206-2018: should be NA except 2013 and 2016: LANA - WILL CHANGE BELOW WHEN I DO QUADS
+  
+# Row 219: was SPLE high in core site in 2013 spring? Nope. LANA: IF QUAD HAD SPPO6, COMBINE SPLE WITH THAT. IF NOT, LEAVE IT. - NO SPP06, SO LEAVE IT.
+resolution.spring[219, ]
+
+data.full.wide %>% filter(quad_id == "crust_creosote_C_2_1" & season == 2 & species == "SPPO6") 
+
+ggplot(core_creosote %>% filter(kartez == "SPLE" & season == "spring"), aes(x = year, y = biomass.BM)) +
+    geom_point() +
+    ggtitle("SPLE")
+  
+
+# Row 166-176: make sure quad was empty in 2020. LANA - YEP, ALL 0'S IN THAT QUAD IN THAT YEAR.
+resolution.spring[166:176, ]
+
+
+
+
+### End of chunk fixes
+
+# Remove rows that need to be removed (doing this at the end so it doesn't mess up my row numbers above): rows 20 and 183
+nrow(resolution.spring)
+resolution.spring <- resolution.spring[-c(20, 183), ]
+
+# Also remove these rows from resolution.spring.merge
+resolution.spring.merge %<>%
+  anti_join(resolution.spring[c(20, 183), ], by = c("species", "quad_id"))
+
+### Remove "CHAL10" and "CHST8" from this dataset (also removed from main dataset, and combined with CHAMA)
+nrow(resolution.spring)
+resolution.spring %<>% filter(!species %in% c("CHAL10", "CHST8"))
+nrow(resolution.spring)
+
+# Also remove from resolution.spring.merge
+nrow(resolution.spring.merge)
+resolution.spring.merge %<>% filter(!species %in% c("CHAL10", "CHST8"))
+nrow(resolution.spring.merge)
+
+```
+
+## "issue" column
+
+Make dataset
+```{r}
+### issues column: fix issues that are not yet resolved based on Jenn's notes in the google doc
+
+# Make a dataset with only these rows (i.e., that have something in the "resolution" column)
+issues.spring <- spring.jumps2 %>%
+  filter(issue != "" & resolution == "")
+nrow(issues.spring)
+
+# Save a copy for merging (I need to match these rows to the rows in "data.full.wide", and remove these old rows from "data.full.wide" before merging in the corrected ones)
+issues.spring.merge <- issues.spring
+```
+
+### "onlyonce"
+
+“only once”: check core site data (creosote or core_black) to see if those species also appear only during that year for the 2013 – 2023 time frame
+```{r}
+spring.onlyOnce <- issues.spring %>%
+  filter(issue == "onlyonce")
+
+# MELE2 creosote 2014
+ggplot(core_creosote %>% filter(kartez == "MELE2" & season == "spring"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("MELE2")
+
+# MUSQ3 creosote 2014
+core_creosote %>% filter(kartez == "MUSQ3" & season == "spring")
+core_black %>% filter(kartez == "MUSQ3" & season == "spring")
+
+
+# MUAR2 creosote 2013, 2015
+ggplot(core_creosote %>% filter(kartez == "MUAR2" & season == "spring"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("MUAR2")
+
+# CAWR grass 2023
+core_black %>% filter(kartez == "CAWR" & season == "spring")
+
+# SCBR2 grass 2015
+ggplot(core_black %>% filter(kartez == "SCBR2" & season == "spring"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("SCBR2")
+
+# ASTRA grass 2023
+core_black %>% filter(kartez == "ASTRA" & season == "spring")
+
+```
+
+
+### "missing"
+
+Not sure what I'm meant to do with these... all have 0's for 2020-2022, and the note "misid or fill?". LANA: FILL W/ AVG OF SURROUNDING YEARS AFTER FIXING EVERYTHING ELSE.
+```{r}
+missing.spring <- issues.spring %>%
+  filter(issue == "missing")
+
+# save original rows for merge later
+missing.spring.merge <- missing.spring
+```
+
+### "misid"
+
+Not sure what I'm meant to do with these either...  LEAVE IT
+```{r}
+misid.spring <- issues.spring %>%
+  filter(issue == "misid")
+
+# save original rows for merge later
+misid.spring.merge <- misid.spring
+
+
+```
+
+### "largedrop"
+
+Not sure what I'm meant to do with this either... LEAVE IT.
+```{r}
+issues.spring %>% 
+  filter(issue == "largedrop")
+```
+
+### Nothing in issue or resolution
+
+LEAVE IT.
+```{r}
+# Make a dataset with only these rows 
+remaining.spring <- spring.jumps2 %>%
+  filter(issue == "" & resolution == "")
+nrow(remaining.spring)
+
+# Save a copy for merging (I need to match these rows to the rows in "data.full.wide", and remove these old rows from "data.full.wide" before merging in the corrected ones)
+issues.spring.merge <- issues.spring
+```
+
+### Replace incorrect rows with corrected rows in original dataset
+
+```{r}
+### Prep Data ###
+
+# These are the pre-corrected data (ending in ".merge")
+nrow(resolution.spring.merge) # 214
+
+# "resolution.spring.merge" has the pre-corrected data with Jenn's additions
+head(resolution.spring.merge)
+
+# Remove columns I don't need from each data set in order to match with data.full.wide
+resolution.spring.merge %<>% 
+  dplyr::select("species", "quad_id", "X2013", "X2014", "X2015", "X2016", "X2017", "X2018", "X2019", "X2020", "X2021", "X2022", "X2023")
+
+ # Need column names to match
+colnames(data.full.wide)[8:18] <- c("X2013", "X2014", "X2015", "X2016", "X2017", "X2018", "X2019", "X2020", "X2021", "X2022", "X2023")
+
+full.spring.merge <- data.full.wide %>%
+  filter(season == 2) %>% 
+  dplyr::select("species", "quad_id", "X2013", "X2014", "X2015", "X2016", "X2017", "X2018", "X2019", "X2020", "X2021", "X2022", "X2023")
+
+names(resolution.spring.merge)
+names(full.spring.merge)
+nrow(resolution.spring.merge) 
+
+
+### Merge ###
+
+# Remove species x quad_id combos that are present in resolution.fall.merge from full.spring.merge
+nrow(full.spring.merge)
+
+df2_filtered <- full.spring.merge %>%
+  anti_join(resolution.spring.merge, by = c("species", "quad_id"))
+nrow(df2_filtered)
+
+# 214 rows were removed, which is correct (all from resolution)
+nrow(full.spring.merge) - nrow(df2_filtered)
+
+# Add in edited rows (from resolution df) with union (I need to get my columns to match first)
+names(df2_filtered)
+names(resolution.spring)
+
+resolution.spring2 <- resolution.spring %>%
+  dplyr::select(-c(notes, functional_group, year, issue, resolution, new, plot_no, quad_no))
+
+names(resolution.spring2)
+names(df2_filtered)
+
+# "resolution" added in to original correct rows
+df2_filtered1 <- union(df2_filtered, resolution.spring2)
+nrow(df2_filtered1) - nrow(df2_filtered) # It's 213, which is correct 
+nrow(resolution.spring2)
+
+# We added one fewer row - not totally sure why...
+nrow(full.spring.merge) - nrow(df2_filtered1) 
+
+# Rename the corrected dataset
+corrected.spring.data <- df2_filtered1
+
+corrected.spring.data %<>%
+  mutate(species = if_else(species %in% c("ASTRA", "ASNU4", "ASFE2"), "ASTRA", species))
+```
+
+I'll do the quad corrections with the fall quad corrections below.
+
+
+
+
+## Fall corrections
+
+Jenn sent back data with notes about things to look into and change (Subj: "fall crust corrections" sent 10/15/2025). She also included a word doc with instructions about the data, and how to deal with different issues.
+<br/>
+Write a csv for Jenn that has all rows where I detected a switch from non-zero in any year prior to 2017, to zero in any year after 2018, or vice versa.
+```{r}
+fall.jumps <- data.full.wide %>%
+  filter(season == 3) %>% # fall
+  filter(nonzero_to_zero == TRUE | zero_to_nonzero == TRUE) %>%
+  arrange(quad_id) %>%
+  dplyr::select(-treatment, -season, -site, -plot, -quad, -nonzero_to_zero, -zero_to_nonzero) %>%
+  as_tibble() 
+
+nrow(fall.jumps)
+
+# Write a csv of all rows to check for if they need corrections.
+write.csv(fall.jumps, "./data/fall_jumps.csv", row.names = FALSE)
+```
+
+### "y"
+
+In notes “y” means that the time series is most likely to be accurate as is, e.g., overall cover was low for the species, and it’s blips in and out over time did not seem unreasonable. in some cases a species may be been recorded in only one year, but in very low abundance that is unlikely to affect anything except for species richness, and there is no way to detect is this was an error, so leave it as is.
+```{r}
+fall.jumps2 <- read.csv("./data/fall_jumps_JR.csv", stringsAsFactors = T)
+
+nrow(fall.jumps2)
+
+### In notes column, “y” means that the time series is most likely to be accurate as is, e.g., overall cover was low for the species. Remove those from the fall.jumps data. Goes from 1227 rows to 308.
+fall.jumps2 %<>%
+  filter(notes != "y")
+
+nrow(fall.jumps2)
+```
+
+
+### "resultion" column corrections
+
+resolution column: these are the notes on what we need to correct by hand in the original datafile to resolve the issues; would start here, make these corrections first
+```{r}
+# Make a dataset with only these rows (i.e., that have something in the "resolution" column)
+resolution.fall <- fall.jumps2 %>%
+  filter(!is.na(resolution) & resolution != "")
+nrow(resolution.fall)
+resolution.fall %>% filter(species == "BOER4", quad_id == "crust_grass_STOMP_32_3")
+
+# Save a copy for merging (I need to match these rows to the rows in "data.full.wide", and remove these old rows from "data.full.wide" before merging in the corrected ones)
+resolution.fall.merge <- resolution.fall
+
+
+### Make corrections!
+
+# Row 1: reduce cover by 4
+resolution.fall[1, ]$X2013 <- resolution.fall[1, ]$X2013 - 4
+
+# Rows 2-6, 9, 77: "check for wrong quadrat". I'm not doing anything for these right now - Jenn made a note that we may need to go back to the original data files.
+
+# Row 7: add 2017 cover value to BOER4 - remove BOGR2
+toAdd <- resolution.fall[7, ]$X2017
+cond <- with(data.full.wide, quad_id == "crust_grass_C_37_3" & species == "BOER4" & season == 3)
+data.full.wide$X2017 <- as.numeric(data.full.wide$X2017)
+data.full.wide$X2017[cond] <- data.full.wide$X2017[cond] + toAdd
+
+resolution.fall[7, ]$X2017 <- 0
+
+# Row 8: reduce 2017 cover to 19.5 
+resolution.fall[8, ]$X2017 <- 19.5
+
+# Row 10: change to BOER4  
+resolution.fall[10, ]$species <- "BOER4"
+
+# Row 11: add 3 to cover in 2017   
+resolution.fall[11, ]$X2017 <- resolution.fall[11, ]$X2017 + 3
+
+# Row 12: change to CHER2 
+resolution.fall[12, ]$species <- "CHER2"
+
+# Row 13: change to ENDE   
+resolution.fall[13, ]$species <- "ENDE"
+
+# Row 14: change to DAPU7  
+resolution.fall[14, ]$species <- "DAPU7"
+
+# Row 15: remove this species; should be CHLA10 should be summed in CHAMA already? 
+  # Lana response: There was a typo, "CHAL10" was removed. I now removed this species from the data.full.long df, and will remove it from this dataset at the very end (so I don't mess up my row numbers)
+
+# Row 16: likely miscalled and should be CHLA10 and combined into CHAMA 
+  # Lana response: Same as above. I'll remove it at the very end from this dataset.
+
+# Row 17: change to ENDE  
+resolution.fall[17, ]$species <- "ENDE"
+
+# Row 18: add 4 to cover in 2017 
+resolution.fall[18, ]$X2017 <- 4
+
+# Row 19: add 7 to cover in 2017, missed MUAR2 that year 
+resolution.fall[19, ]$X2017 <- 7
+
+# Row 20: add 8 to cover in 2017 
+resolution.fall[20, ]$X2017 <- 8
+
+# Row 21: add 1 to cover in 2017 
+resolution.fall[21, ]$X2017 <- 1
+
+# Row 22: add 5.5 for cover in 2017   
+resolution.fall[22, ]$X2017 <- 5.5
+
+# Row 23: add 2 to cover in 2019 
+resolution.fall[23, ]$X2019 <- 2
+
+# Row 24: add 2 to cover in 2019
+resolution.fall[24, ]$X2019 <- 2
+
+# Row 25: combine into OPMA8 - LANA: Turn to OPMA8
+resolution.fall[25, ]$species <- "OPMA8"
+
+# Row 26-43: should be summed in CHAMA, remove this species 
+  # Lana: Done in the main data (data.full.long), and coded at the end of this section to remove from this df (fall.resultion)
+
+# Row 44: change to GUSA2 
+resolution.fall[44, ]$species <- "GUSA2"
+
+# Row 45: change to THAC 
+resolution.fall[45, ]$species <- "THAC"
+
+# Row 46: change to ENDE
+resolution.fall[46, ]$species <- "ENDE"
+
+# Row 47: change to MELE2 
+resolution.fall[47, ]$species <- "MELE2"
+
+# Row 48: change to DAPU7  
+resolution.fall[48, ]$species <- "DAPU7"
+
+# Row 49: change to MUSQ3  
+resolution.fall[49, ]$species <- "MUSQ3"
+
+# Row 50: change to GUSA2 
+resolution.fall[50, ]$species <- "GUSA2"
+
+# Row 51: change to GUSA2 
+resolution.fall[51, ]$species <- "GUSA2"
+
+# Row 52: should be MUAR2 - typo 
+resolution.fall[52, ]$species <- "MUAR2"
+
+# Row 53: change to ENDE   
+resolution.fall[53, ]$species <- "ENDE"
+
+# Row 54: change to MUPO2
+resolution.fall[54, ]$species <- "MUPO2"
+
+# Row 55: should be summed in CHAMA, remove this species
+  # Lana: Removed at end of chunk
+
+# Row 56: change to GUSA2
+resolution.fall[56, ]$species <- "GUSA2"
+
+# Row 57: change to MUSQ3   
+resolution.fall[57, ]$species <- "MUSQ3"
+
+# Row 58: add 2017 cover value to BOER4 - remove PLJA. 
+toAdd <- resolution.fall[58, ]$X2017
+cond <- with(data.full.wide, quad_id == "crust_grass_C_37_3" & species == "BOER4" & season == 3)
+data.full.wide$X2017 <- as.numeric(data.full.wide$X2017)
+data.full.wide$X2017[cond] <- data.full.wide$X2017[cond] + toAdd
+
+resolution.fall[58, ]$X2017 <- 0
+
+# Row 59-63: lump with  ASTRA for analysis.    
+resolution.fall[59:63, ]$species <- "ASTRA"
+
+# Row 64-66: change to KAHI 
+resolution.fall[64:66, ]$species <- "KAHI"
+
+# Row 67: change to TILA2   
+resolution.fall[67, ]$species <- "TILA2"
+
+# Row 68: change to ENDE
+resolution.fall[68, ]$species <- "ENDE"
+
+# Row 69: remove 1 from cover in 2016 and 2017
+resolution.fall[69, ]$X2016 <- resolution.fall[69, ]$X2016 - 1
+resolution.fall[69, ]$X2017 <- resolution.fall[69, ]$X2017 - 1
+
+# Row 70: remove 10 cover from 2017 
+resolution.fall[70, ]$X2017 <- resolution.fall[70, ]$X2017 - 10
+
+# Row 71: remove 27 from cover in 2017  
+resolution.fall[71, ]$X2017 <- resolution.fall[71, ]$X2017 - 27
+
+# Row 72: remove 7 from cover in 2017
+resolution.fall[72, ]$X2017 <- resolution.fall[72, ]$X2017 - 7
+
+# Row 73: remove 7 from cover in 2017 
+resolution.fall[73, ]$X2017 <- resolution.fall[73, ]$X2017 - 7
+
+# Row 74: remove 4 from cover in 2019
+resolution.fall[74, ]$X2019 <- resolution.fall[74, ]$X2019 - 4
+
+# Row 75: remove 0.3 from cover in 2017 and 2018 
+resolution.fall[75, ]$X2017 <- resolution.fall[75, ]$X2017 - 0.3
+resolution.fall[75, ]$X2018 <- resolution.fall[75, ]$X2018 - 0.3
+
+# Row 76: add 1 to cover in 2016 and 2017   
+resolution.fall[76, ]$X2016 <- resolution.fall[76, ]$X2016 + 1
+resolution.fall[76, ]$X2017 <- resolution.fall[76, ]$X2017 + 1
+
+# Row 78: add 3 cover to 2017, missed BOGR2 that year  
+resolution.fall[78, ]$X2017 <- resolution.fall[78, ]$X2017 + 3
+
+# Row 79: add 12 to cover in 2017
+resolution.fall[79, ]$X2017 <- resolution.fall[79, ]$X2017 + 12
+
+# Row 80: add 7 to cover in 2017 
+resolution.fall[80, ]$X2017 <- resolution.fall[80, ]$X2017 + 7
+
+# Row 81: add 7 to cover in 2017   
+resolution.fall[81, ]$X2017 <- resolution.fall[81, ]$X2017 + 7
+
+# Row 82: remove 1 from cover in 2017   
+resolution.fall[82, ]$X2017 <- resolution.fall[82, ]$X2017 - 1
+
+# Row 83-85: change to MUSQ3
+resolution.fall[83:85, ]$species <- "MUSQ3"
+
+# Row 86: add 0.3 to cover in 2017 and 2018  
+resolution.fall[86, ]$X2017 <- resolution.fall[86, ]$X2017 + 0.3
+resolution.fall[86, ]$X2018 <- resolution.fall[86, ]$X2018 + 0.3
+
+# Row 87: change to SPORO  
+resolution.fall[87, ]$species <- "SPORO"
+
+# Row 88: add 2017 cover value to BOER4 - remove MUAR2.
+toAdd <- resolution.fall[88, ]$X2017
+cond <- with(data.full.wide, quad_id == "crust_grass_C_37_3" & species == "BOER4" & season == 3)
+data.full.wide$X2017 <- as.numeric(data.full.wide$X2017)
+data.full.wide$X2017[cond] <- data.full.wide$X2017[cond] + toAdd
+
+resolution.fall[88, ]$X2017 <- 0
+
+# Row 89: change to MUSQ3
+resolution.fall[89, ]$species <- "MUSQ3"
+
+# Row 90: change to BOGR2 
+resolution.fall[90, ]$species <- "BOGR2"
+
+# Row 91-93: change to MUSQ3 
+resolution.fall[91:93, ]$species <- "MUSQ3"
+
+# Row 94-95: change to MUAR2
+resolution.fall[94:95, ]$species <- "MUAR2"
+
+# Row 96: add 4 for cover in 2013, change species to MUSQ3
+resolution.fall[96, ]$X2013 <- 4
+resolution.fall[96, ]$species <- "MUSQ3"
+
+# Row 97: change to LATR2 
+resolution.fall[97, ]$species <- "LATR2"
+
+# Row 98: change to THAC  
+resolution.fall[98, ]$species <- "THAC"
+
+# Row 99: should be GUSA2
+resolution.fall[99, ]$species <- "GUSA2"
+
+
+
+### Remove "CHAL10" and "CHST8" from this dataset (also removed from main dataset, and combined with CHAMA)
+resolution.fall %<>% filter(!species %in% c("CHAL10", "CHST8"))
+
+resolution.fall %>% filter(species == "BOER4", quad_id == "crust_grass_STOMP_32_3")
+```
+
+"new" == "x" (these are later fixes that Jenn sent via email on 10/23/2025)
+```{r}
+# Load new data
+fall.jumps3 <- read.csv("./data/fall_jumps_JR_2025.10.23.csv", stringsAsFactors = T)
+
+# Make a dataset for "new" == "x"
+new.fall <- fall.jumps3 %>%
+  filter(new == "x") %>%
+  arrange(resolution)
+nrow(new.fall)
+
+# Save a copy for merging (I need to match these rows to the rows in "data.full.wide", and remove these old rows from "data.full.wide" before merging in the corrected ones)
+new.fall.merge <- new.fall
+
+### Make corrections!
+
+# Rows 1-3: Change to GUSA2
+new.fall[1:3, ]$species <- "GUSA2"
+
+# Rows 4-5: Change to GUSP
+new.fall[4:5, ]$species <- "GUSP"
+
+# Row 6: Change to KAHI
+new.fall[6, ]$species <- "KAHI"
+
+# Rows 7-15: Change to KAPA
+new.fall[7:15, ]$species <- "KAPA"
+
+# Row 16: Change to MELE2
+new.fall[16, ]$species <- "MELE2"
+
+# Row 17: Change "20" to "0.2"
+new.fall[17, ]$X2017 <- 0.2
+```
+
+
+
+## "issues" column (resolving unresolved issues)
+
+
+Make datasets
+```{r}
+### issues column: fix issues that are not yet resolved based on Jenn's notes in the google doc
+
+# Make a dataset with only these rows (i.e., that have something in the "resolution" column)
+issues.fall <- fall.jumps2 %>%
+  filter(!is.na(resolution) & !resolution != "")
+nrow(issues.fall)
+
+issues.fall$year <- as.numeric(as.character(issues.fall$year))
+
+
+# Save a copy for merging (I need to match these rows to the rows in "data.full.wide", and remove these old rows from "data.full.wide" before merging in the corrected ones)
+issues.fall.merge <- issues.fall
+```
+
+### "too high"
+
+"too high": check core site data (creosote or core_black) to see if there were similar pulses in abundance in the same year(s) – mostly 2013 – in those species
+```{r}
+### 2013
+tooHigh.fall.2013 <- issues.fall %>%
+  filter(issue == "too high" & year == 2013)
+
+core_black_2013 <- core_black %>%
+  filter(year == 2013)
+
+sp.2013 <- c("CHAMA", "TILA2", "BOBA2", "BOER4")
+plots.2013 <- list()
+
+for (i in 1:length(sp.2013)) {
+  
+  species.name <- sp.2013[i]
+  
+  p.black <- ggplot(core_black %>% filter(kartez == species.name & season == "fall"), aes(x = year, y = biomass.BM)) +
+    geom_point() +
+    ggtitle(species.name)
+  
+  plots.2013[["core_black"]][[species.name]] <- p.black
+  
+  p.creosote <- ggplot(core_creosote %>% filter(kartez == species.name & season == "fall"), aes(x = year, y = biomass.BM)) +
+    geom_point() +
+    ggtitle(species.name)
+  
+  plots.2013[["core_creosote"]][[species.name]] <- p.creosote
+  
+}
+
+# CHAMA, BOBA2, and BOER4 were too high in crust_creosote
+plots.2013$core_creosote$CHAMA
+plots.2013$core_creosote$BOBA2
+plots.2013$core_creosote$BOER4
+
+# TILA2 was too high in crust_grass
+plots.2013$core_black$TILA2
+
+
+## Compare means STOMP data to means at their sister core site and see if they're comparable. If they’re not, we can consider doing analyses without 2013 included.
+
+# CHAMA - ~2.5x higher than cover in core site (fall 2013)
+data.full.long %>%
+  filter(species == "CHAMA" & year == 2013 & treatment == "C" & site == "crust_creosote" & season == 3) %>%
+  dplyr::summarise(mean_cover = mean(quadcover))
+ 
+core_creosote %>%
+  filter(kartez == "CHAMA" & year == 2013 & treatment == "C" & season == "fall") %>%
+  dplyr::summarise(mean_cover = mean(cover)) 
+
+# BOBA2 - ~3x LOWER than cover in core site (fall 2013)
+data.full.long %>%
+  filter(species == "BOBA2" & year == 2013 & treatment == "C" & site == "crust_creosote" & season == 3) %>%
+  dplyr::summarise(mean_cover = mean(quadcover))
+ 
+core_creosote %>%
+  filter(kartez == "BOBA2" & year == 2013 & treatment == "C" & season == "fall") %>%
+  dplyr::summarise(mean_cover = mean(cover)) 
+
+# BOER4 - ~4x higher than cover in core site (fall 2013)
+data.full.long %>%
+  filter(species == "BOER4" & year == 2013 & treatment == "C" & site == "crust_creosote" & season == 3) %>%
+  dplyr::summarise(mean_cover = mean(quadcover))
+ 
+core_creosote %>%
+  filter(kartez == "BOER4" & year == 2013 & treatment == "C" & season == "fall") %>%
+  dplyr::summarise(mean_cover = mean(cover)) 
+
+# TILA2 - ~7x LOWER than cover in core site (fall 2013)
+data.full.long %>%
+  filter(species == "TILA2" & year == 2013 & treatment == "C" & site == "crust_grass" & season == 3) %>%
+  dplyr::summarise(mean_cover = mean(quadcover))
+ 
+core_black %>%
+  filter(kartez == "TILA2" & year == 2013 & treatment == "C" & season == "fall") %>%
+  dplyr::summarise(mean_cover = mean(cover)) 
+
+core_creosote %>%
+  filter(kartez == "TILA2" & year == 2013 & treatment == "C" & season == "fall")
+
+
+  # We had TILA2 only in 2013 mainly at CRUST_CREOSOTE. Emerson suggests it could have been: SEDI3, ERRO2, ALIN
+  core_creosote %>% filter(year == 2013 & season == "fall" & kartez %in% c("SEDI3", "ERRO2", "ALIN"))
+  core_black %>% filter(year == 2013 & season == "fall" & kartez %in% c("SEDI3", "ERRO2", "ALIN"))
+
+
+### 2017 - just ASTRA. NO ASTRA IN CORE CREOSOTE
+fall.tooHigh.2017 <- issues.fall %>%
+  filter(issue == "too high" & year == 2017)
+
+core_black_2017 <- core_black %>%
+  filter(year == 2017 & kartez == "ASTRA")
+core_black_2017
+
+core_creosote_2017 <- core_creosote %>%
+  filter(year == 2017 & kartez == "ASTRA")
+core_black_2017
+
+# Emerson suggests for ASTRA: ASNU4, ASLE8, ASFL2, ASFE2, DAFO, DALA3, DANA (or DANAN)
+core_creosote %>% 
+  filter(season == "fall") %>%
+  filter(kartez %in% c("ASNU4", "ASLE8", "ASFL2", "ASFE2", "DAFO", "DALA3", "DANA", "DANAN")) %>% 
+  arrange(kartez) %>% 
+  relocate(kartez)
+
+
+### 2018: LEAVE CHAMA AS IS. ASK FIELD CREW FOR COMMON MIS-IDS OF ASTRA
+tooHigh.fall.2018 <- issues.fall %>%
+  filter(issue == "too high" & year == 2018)
+
+ggplot(core_creosote %>% filter(kartez == "CHAMA" & season == "fall"), aes(x = year, y = cover)) +
+  geom_point() +
+  ggtitle("CHAMA")
+
+ggplot(core_creosote %>% filter(kartez == "ASTRA" & season == "fall"), aes(x = year, y = cover)) +
+  geom_point() +
+  ggtitle("ASTRA")
+
+ggplot(core_creosote %>% filter(kartez == "ASFE2" & season == "fall"), aes(x = year, y = cover)) +
+  geom_point() +
+  ggtitle("ASFE2")
+```
+
+
+### "only once"
+
+"only once": check core site data (creosote or core_black) to see if those species also appear only during that year for the 2013 – 2023 time frame
+```{r}
+fall.onlyOnce <- issues.fall %>%
+  filter(issue == "only once")
+
+### SEFLF (2016 and 2017, creosote and grass) - doesn't exists in core black or core creosote at all. ASK FIELD CREW FOR COMMON MIS-IDS OF SEFLF
+core_creosote %>% filter(kartez == "SEFLF" & season == "fall")
+core_black %>% filter(kartez == "SEFLF" & season == "fall")
+
+# Emerson suggests: PSTAT, MAPI, BAMU
+core_creosote %>% filter(kartez == "PSTAT" & season == "fall")
+core_black %>% filter(kartez == "PSTAT" & season == "fall")
+
+core_creosote %>% filter(kartez == "MAPI" & season == "fall")
+core_black %>% filter(kartez == "MAPI" & season == "fall")
+
+core_creosote %>% filter(kartez == "BAMU" & season == "fall")
+core_black %>% filter(kartez == "BAMU" & season == "fall")
+
+
+
+# Which sites have SEFLF in 2016? EDGE_blue, grid_blue, mixed_grass. Should I look at these?
+seflf <- mass2 %>%
+  filter(year == 2016 & kartez == "SEFLF")
+unique(seflf$site)
+
+
+### KRLA2 (2014 and 2015, grass) - OK, NO NEED TO FIX
+core_black %>% filter(kartez == "KRLA2" & season == "fall")
+core_creosote %>% filter(kartez == "KRLA2" & season == "fall")
+
+# Which sites have KRLA2 in 2014 and 2015? A bunch. Should I look at these?
+KRLA2 <- mass2 %>%
+  filter(year %in% c(2014, 2015) & kartez == "KRLA2")
+unique(KRLA2$site)
+
+
+### ENDE (2014, creosote) -  - OK, NO NEED TO FIX
+ggplot(core_creosote %>% filter(kartez == "ENDE" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("ENDE")
+
+
+### MUSQ3 (2021, creosote) -  - OK, NO NEED TO FIX
+ggplot(core_creosote %>% filter(kartez == "MUSQ3" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("MUSQ3")
+```
+
+
+### missing
+
+"missing": if missing check for wrong quadrat entry in that year, may need to look at original datasheets; also check to see if it dropped to low values in that missing year in the core site data
+
+```{r}
+missing.fall <- issues.fall %>%
+  filter(issue == "missing")
+
+# save original rows for merge later
+missing.fall.merge <- missing.fall
+
+missing.fall %>% dplyr::select(species, quad_id, year) %>% arrange(species)
+
+unique(missing.fall$species)
+
+# BOER4 missing 2013 (grass) - SHOULD BE THERE
+ggplot(core_black %>% filter(kartez == "BOER4" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("BOER4")
+
+# BOGR2 missing 2013 (grass) - IT WASN'T AT CORE BLACK, BUT WAS AT CORE BLUE
+ggplot(core_black %>% filter(kartez == "BOGR2" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("BOGR2")
+
+ggplot(mass %>% filter(site == "core_blue" & kartez == "BOGR2" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("BOGR2")
+
+
+# CHAMA missing 2018 (creosote) - WAS LOW IN 2018 (BUT ALSO SURROUNDING YEARS)
+ggplot(core_creosote %>% filter(kartez == "CHAMA" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("CHAMA")
+
+# GUSA2 missing 2014 (creosote)
+ggplot(core_creosote %>% filter(kartez == "GUSA" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("GUSA2")
+
+# LATR2 missing 2015, 2017, 2022 (creosote)
+ggplot(core_creosote %>% filter(kartez == "LATR2" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("LATR2")
+
+# OPMA8 missing 2022 (creosote)
+ggplot(core_creosote %>% filter(kartez == "OPMA8" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("OPMA8")
+
+# SATR12 missing 2018, 2020, 2023 (grass)
+ggplot(core_black %>% filter(kartez == "SATR12" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("SATR12")
+
+# SPORO missing 2017 (grass)
+ggplot(core_black %>% filter(kartez == "SPORO" & season == "fall"), aes(x = year, y = biomass.BM)) +
+  geom_point() +
+  ggtitle("SPORO")
+```
+
+Fixes from new notes Jenn sent on 10/23/2025
+```{r}
+# Arrange by species (how Jenn has it)
+missing.fall %<>%
+  arrange(species)
+
+# Change crust_grass_C_28_3 2013 to NA for this whole quad - we only did quds 2 & 4 in this period
+missing.fall[missing.fall$quad_id == "crust_grass_C_28_3", ]$X2013 <- NA
+
+# GUSA2, crust_creosote_STOMP_1_3, 2014: interpolate avg from 2013-2014 to fill zero
+missing.fall[7, ]$X2014 <- mean(c(missing.fall[7, ]$X2013, missing.fall[7, ]$X2015))
+
+# LATR2, crust_creosote_STOMP_10_1, 2015: no data recorded – interpolate avg from 2014,6
+missing.fall[8, ]$X2015 <- mean(c(missing.fall[8, ]$X2014, missing.fall[8, ]$X2016))
+
+# LATR2, crust_creosote_C_4_3, 2015: should be 28 in 2015 – why is 2016 zero? LANA ANSWER: I THINK THE WRONG YEAR WAS ENTERED IN THE "year" COLUMN. I WILL INTERPOLATE
+missing.fall[9, ]$X2015 <- 28
+missing.fall[9, ]$X2016 <- mean(c(missing.fall[9, ]$X2015, missing.fall[9, ]$X2017))
+
+# LATR2, crust_creosote_C_20_1, 2017: no data recorded – interpolate avg from 2016,8
+missing.fall[10, ]$X2017 <- mean(c(missing.fall[10, ]$X2016, missing.fall[10, ]$X2018))
+
+# LATR2, crust_creosote_C_16_3, 2017: 16-3 should be 22 in 2017, why zero in 2013? LANA ANSWER: NOT SURE... MAYBE WHEN YOU LOOKED THROUGH THE DATA IT SEEMED LIKE A REASONABLE ESCALATION FROM 0 TO 0.22 TO 3.33, ETC.? IT LOOKS LIKE 2020 IS THE WEIRD YEAR, SO I WILL INTERPOLATE IT.
+missing.fall[12, ]$X2017 <- 22
+missing.fall[12, ]$X2020 <- mean(c(missing.fall[12, ]$X2019, missing.fall[12, ]$X2021))
+
+# SPORO, crust_grass_C_37_1, 2017: this was misIDd as MUAR2 – but was noted in resolution column already. LANA: SO IS IT OK? I'M NOT SEEING THAT IN THE RESOLUTION COLUMN...
+missing.fall[30, ]
+
+
+### For 2018 and onward, interpolate the flagged 0's for all species except for SATR12 (because they are super variable)
+missing.fall %>%
+  filter(year >= 2018 & species != "SATR12")
+
+# CHAMA, crust_creosote_C_16_1, 2018
+missing.fall[3, ]$X2018 <- mean(c(missing.fall[3, ]$X2017, missing.fall[3, ]$X2019))
+
+# CHAMA, crust_creosote_C_16_3, 2018
+missing.fall[4, ]$X2018 <- mean(c(missing.fall[4, ]$X2017, missing.fall[4, ]$X2019))
+
+# CHAMA, crust_creosote_C_18_3, 2018
+missing.fall[5, ]$X2018 <- mean(c(missing.fall[5, ]$X2017, missing.fall[5, ]$X2019))
+
+# CHAMA, crust_creosote_C_6_1, 2018
+missing.fall[6, ]$X2018 <- mean(c(missing.fall[6, ]$X2017, missing.fall[6, ]$X2019))
+
+# LATR2, crust_creosote_C_18_1, 2022
+missing.fall[11, ]$X2022 <- mean(c(missing.fall[11, ]$X2021, missing.fall[11, ]$X2023))
+
+# OPMA8, crust_creosote_C_6_3, 2022
+missing.fall[13, ]$X2022 <- mean(c(missing.fall[13, ]$X2021, missing.fall[13, ]$X2023))
+
+
+
+
+
+
+
+```
+
+
+### large increase or large drop 
+
+"large increase or large drop": check to see if the wrong quadrat was monitored that year and zeros were entered for other years.  
+<br/>
+to check on:  there were a few plots where we did quads other than 1, 3 in early years because of disturbances, like Pogo ant nests or Krat mounds. We need to check if field crew kept to the correct quads or always did quads 1, 3 and if the latter, then we should fill the offset years with NAs (possible that different quads were monitored for E vs L years in some plots) we should be able to pick these out with a summary by quad_id because the counts for all quad_ids should be the same (number of years*2 seasons), and when not, this is likely the problem and should have begun in 2018-19
+<br/>
+For the quad counts - can you do those before reshaping the data and filling zeros - it will still count as a quad observation in the dcast using your current method, because it will just fill with zeros if the quad wasn't observed - it fills zeros in the whole matrix.  
+<br/>
+I know there were plots that we did quads 2 and 4 initially, and it seemed like all the post 2018 were only 1 and 3.
+<br/>
+
+Data prep to look at which quads were monitored.
+```{r}
+# 11 years of data.
+range(issues.fall$year, na.rm=T)
+
+## data.full.long
+
+sporo.grass <- data.full.long %>%
+  filter(species %in% c("SPCO4", "SPCR", "SPFL2", "SPORO")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_id) %>%
+  dplyr::summarise(quadcover = sum(quadcover))
+
+sporo.grass$species <- "SPORO"
+
+chama.grass <- data.full.long %>%
+  filter(species %in% c("CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHAMA", "CHST8")) %>%
+  group_by(year, season, site, treatment, plot, quad, quad_id) %>%
+  dplyr::summarise(quadcover = sum(quadcover))
+
+chama.grass$species <- "CHAMA"
+
+data.full.long %<>% dplyr::select(year, season, site, treatment, plot, quad, quad_id, quadcover, species)
+
+# Remove species that have been combined into SPORO and CHAMA
+data.full.long %<>%
+  filter(!species %in% c("SPCO4", "SPCR", "SPFL2", "SPORO", "CHAL11", "CHAMA15", "CHCHC3", "CHFE3", "CHAL10", "CHLA10", "CHRE4", "CHSE7", "CHSES", "CHAMA", "CHST8"))
+nrow(data.full.long)
+
+# Merge new SPORO and CHAMA data with all the other species
+data.full.long <- union(data.full.long, sporo.grass)
+data.full.long <- union(data.full.long, chama.grass)
+
+# Remove "FORB_SEEDLING", "GRASS_SEEDLING", "FORB_UNKNOWN"
+data.full.long %<>%
+  filter(!species %in% c("FORB_SEEDLING", "GRASS_SEEDLING", "FORB_UNKNOWN"))
+
+```
+
+## Replace incorrect rows with corrected rows in original dataset
+
+I want to do this before correcting the quads.
+```{r}
+### Prep Data ###
+
+# These are the pre-corrected data (ending in ".merge")
+
+# Remove "CHAL10" and "CHST8" from resolution.fall.merge (also removed from main dataset, and "resolution.fall", and combined with CHAMA). These species aren't in new.fall.merge or missing.fall.merge (shown below)
+resolution.fall.merge %<>% filter(!species %in% c("CHAL10", "CHST8"))
+new.fall.merge %>% filter(species %in% c("CHAL10", "CHST8"))
+missing.fall.merge %>% filter(species %in% c("CHAL10", "CHST8"))
+
+# "resolution.fall.merge" has the pre-corrected data with Jenn's additions
+head(resolution.fall.merge)
+
+# Remove columns I don't need from each data set in order to match with data.full.wide
+resolution.fall.merge %<>% 
+  dplyr::select("species", "quad_id", "X2013", "X2014", "X2015", "X2016", "X2017", "X2018", "X2019", "X2020", "X2021", "X2022", "X2023")
+
+new.fall.merge %<>% 
+  dplyr::select("species", "quad_id", "X2013", "X2014", "X2015", "X2016", "X2017", "X2018", "X2019", "X2020", "X2021", "X2022", "X2023")
+
+missing.fall.merge %<>% 
+  dplyr::select("species", "quad_id", "X2013", "X2014", "X2015", "X2016", "X2017", "X2018", "X2019", "X2020", "X2021", "X2022", "X2023")
+
+
+  # Need column names to match
+  colnames(data.full.wide)[8:18] <- c("X2013", "X2014", "X2015", "X2016", "X2017", "X2018", "X2019", "X2020", "X2021", "X2022", "X2023")
+
+  
+full.fall.merge <- data.full.wide %>%
+  filter(season == 3) %>% 
+  dplyr::select("species", "quad_id", "X2013", "X2014", "X2015", "X2016", "X2017", "X2018", "X2019", "X2020", "X2021", "X2022", "X2023")
+
+names(resolution.fall.merge)
+names(new.fall.merge)
+names(missing.fall.merge)
+names(full.fall.merge)
+
+nrow(resolution.fall.merge)
+nrow(new.fall.merge)
+nrow(missing.fall.merge)
+
+
+### Merge ###
+
+
+# Remove species x quad_id combos that are present in resolution.fall.merge from full.fall.merge
+nrow(full.fall.merge)
+df1_filtered <- full.fall.merge %>%
+  anti_join(resolution.fall.merge, by = c("species", "quad_id"))
+nrow(df1_filtered) # removes 78 "resolution" rows
+
+df1_filtered %>% filter(species == "ASTRA", quad_id == "crust_creosote_C_12_1")
+full.fall.merge %>% filter(species == "ASTRA", quad_id == "crust_creosote_C_12_1")
+resolution.fall.merge %>% filter(species == "ASTRA", quad_id == "crust_creosote_C_12_1")
+
+df1_filtered <- df1_filtered %>%
+  anti_join(new.fall.merge, by = c("species", "quad_id"))
+nrow(df1_filtered) # Removes 17 "new" rows
+
+df1_filtered <- df1_filtered %>%
+  anti_join(missing.fall.merge, by = c("species", "quad_id"))
+nrow(df1_filtered) # Removes 30 "missing" rows 
+
+# 125 rows were removed, which is correct (78 resolution, 17 new, and 30 missing)
+nrow(full.fall.merge) - nrow(df1_filtered)
+
+# Add in edited rows (from resolution, new, and issues dfs) with union (I need to get my columns to match first)
+names(df1_filtered)
+names(resolution.fall)
+names(new.fall)
+names(missing.fall)
+
+resolution.fall2 <- resolution.fall %>%
+  dplyr::select(-c(notes, functional_group, year, issue, resolution))
+
+new.fall2 <- new.fall %>%
+  dplyr::select(-c(notes, functional_group, year, issue, resolution, new))
+
+missing.fall2 <- missing.fall %>%
+  dplyr::select(-c(notes, functional_group, year, issue, resolution))
+
+names(resolution.fall2)
+names(new.fall2)
+names(missing.fall2)
+names(df1_filtered)
+
+
+# "resolution" added in to original correct rows
+df1_filtered1 <- union(df1_filtered, resolution.fall2)
+nrow(df1_filtered1) - nrow(df1_filtered) # Good
+
+df1_filtered1 %>% filter(species == "ASTRA", quad_id == "crust_creosote_C_4_1")
+df1_filtered1 %>% filter(species == "BOER4", quad_id == "crust_grass_STOMP_32_3")
+
+df1_filtered %>% filter(species == "BOER4", quad_id == "crust_grass_STOMP_32_3")
+resolution.fall2 %>% filter(species == "BOER4", quad_id == "crust_grass_STOMP_32_3")
+
+
+
+# "new" added on
+df1_filtered2 <- union(df1_filtered1, new.fall2)
+nrow(df1_filtered2) - nrow(df1_filtered1) # Good
+
+# "issues" added on
+df1_filtered3 <- union(df1_filtered2, missing.fall2)
+nrow(df1_filtered3) - nrow(df1_filtered2)
+
+# We're back to the original number of rows! So the merging was successful!
+nrow(full.fall.merge) - nrow(df1_filtered3) 
+
+
+### These are rows that I edited, and I need to sum rows with matching species x quad_id. In each quad_id x species, add up the biomass in each year for all rows of a given species in a given quad
+
+year_cols <- c("X2013","X2014","X2015","X2016","X2017",
+               "X2018","X2019","X2020","X2021","X2022","X2023")
+
+df1_filtered3 <- df1_filtered3 %>%
+  group_by(quad_id, species) %>%
+  dplyr::summarise(
+    # keep non-year columns as their first value
+    across(-all_of(year_cols), ~ dplyr::first(.x)),
+    # sum year columns
+    across(all_of(year_cols), ~ sum(.x, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  distinct() %>%
+  arrange(quad_id, species)
+
+
+# Rename the corrected dataset
+corrected.fall.data <- df1_filtered3
+
+corrected.fall.data %<>%
+  mutate(species = if_else(species %in% c("ASTRA", "ASNU4", "ASFE2"), "ASTRA", species))
+
+```
+
+
+
+
+I need to know which quadrat was monitored in each plot for how many years, using data without 0's filled. Group by plot and quadrat (not quad_id), see which plots have different 2 and 4. Then figure out when even quads were monitored and when odds were monitored, to figure out where NAs should be filled in. Look across whole dataset (not just jumps). In years where 1 and 3 were monitored fewer years than they should, those other years need to get filled in with NAs for all species in the quad.
+
+
+```{r}
+names(data.full.long) # 2013-2023
+
+# Remove 0's from data.full.long (pre-2018 data), and remove year 2018
+data.full.long.no0 <- data.full.long %>%
+  filter(quadcover != 0) 
+
+range(data.full.long.no0$year)
+
+
+# Group and summarise - these data have both fall and spring
+quad_summary <- data.full.long.no0 %>%
+  group_by(plot, quad) %>%
+  dplyr::summarise(n_years = n_distinct(year)) %>%
+  print(n = Inf)
+
+write.csv(quad_summary, "./data/quad_summary.csv", row.names = FALSE)
+```
+
+
+
+Look at plots with weird stuff going on. Plots 1-20 (crust_creosote) look mostly fine, but then plots 21-40 (crust_grass) get funky.
+```{r}
+# I think anytime there's a "1" for 2 and 4 and "11" for 1 and 3, it's probably just because all quads were surveyed in 2013 (the switch to surveying only 1 and 3 happened for 2014). But I should check. YES, THIS IS CORRECT.
+data.full.long.no0_grass <- data.full.long.no0 %>% filter(site == "crust_grass")
+
+data.full.long.no0_grass %>%
+  group_by(species, quad_id, year, season) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n > 1)
+
+data.full.long.no0_grass %>% filter(species == "ALIN", quad_id == "crust_grass_C_25_3", year == 2023, season == 3)
+
+
+### Plot 23
+temp.23 <- data.full.long.no0_grass %>% 
+  filter(plot == 23)
+  
+temp.23.cast <- dcast(temp.23, treatment + species + season + site + plot + quad + quad_id ~ year, sum, value.var = "quadcover", fill = NA_real_) %>% dplyr::select(-c(treatment, site, quad_id)) %>% arrange(season, quad, species) %>% relocate(plot, season, species, quad)
+
+### Plot 28
+temp.28 <- data.full.long.no0_grass %>% 
+  filter(plot == 28)
+  
+temp.28.cast <- dcast(temp.28, treatment + species + season + site + plot + quad + quad_id ~ year, sum, value.var = "quadcover", fill = NA_real_) %>% dplyr::select(-c(treatment, site, quad_id)) %>% arrange(season, quad, species) %>% relocate(plot, season, species, quad)
+
+### Plot 29
+temp.29 <- data.full.long.no0_grass %>% 
+  filter(plot == 29)
+  
+temp.29.cast <- dcast(temp.29, treatment + species + season + site + plot + quad + quad_id ~ year, sum, value.var = "quadcover", fill = NA_real_) %>% dplyr::select(-c(treatment, site,  quad_id)) %>% arrange(season, quad, species) %>% relocate(plot, season, species, quad) 
+
+### Plot 20
+temp.20 <- data.full.long.no0 %>% 
+  filter(plot == 20)
+  
+temp.20.cast <- dcast(temp.20, treatment + species + season + site + plot + quad + quad_id ~ year, sum, value.var = "quadcover", fill = NA_real_) %>% dplyr::select(-c(treatment, site, quad_id)) %>% arrange(season, quad, species) %>% relocate(plot, season, species, quad)
+
+### Combine these dfs
+list_of_dfs <- list(temp.23.cast, temp.28.cast, temp.29.cast, temp.20.cast)
+
+# Combine using do.call and rbind
+combined_df <- bind_rows(list_of_dfs)
+write.csv(combined_df, "./data/weird_quads_monitored.csv", row.names = FALSE)
+
+combined_df %>%
+  group_by(species, plot, quad, season) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n>1)
+```
+
+* Plot 23: 
+  * Spring (season 2), 2016: Quads 1, 2, and 3 were monitored in 2016 (all 4 quads in 2013)
+* Plot 28: 
+  * Spring (season 2), 2014: Quads 2 and 4 were monitored instead of quads 1 and 3 in 2014. 
+  * Fall (season 3), 2013: Only quads 2 and 4 were monitored in 2013. 
+* Plot 29: 
+  * Spring (season 2), 2017-2023: Quad 4 surveyed instead of quad 3. (all 4 quads in 2013)
+  * Fall (season 3), 2017: Quads 1, 2, and 4 surveyed
+  * Fall (season 3), 2018-2023: Quad 4 surveyed instead of quad 3.
+* Check Plot 20 as well (only 10 years in quad 3, but no quads 2 or 4...): 
+  * 2020 had no observations in quad 3. Could it be an plantless quad?
+  
+<br/>
+
+Based on above, find all quads in the corrected dataset ("df1_filtered3") that weren't monitored and change the 0's to NA's. I'M JUST DOING THIS FOR FALL RIGHT NOW. WHEN I GET SPRING DATA, FIX THE SPRING (SEASON 2) ONES ABOVE ON THAT DATASET.
+
+Plots 1-20 are ok (assuming field crew comes back and says quad 3 in plot 20 had no plants in 2020)
+```{r}
+# Add plot and quad info to corrected.fall.data
+quad.plot.info <- data.full.long %>%
+  dplyr::select(quad_id, plot, quad) %>%
+  unique()
+
+corrected.fall.data <- left_join(corrected.fall.data, quad.plot.info, by = "quad_id")
+corrected.spring.data <- left_join(corrected.spring.data, quad.plot.info, by = "quad_id")
+
+
+# Sum together all species in a quad for each year
+year_cols
+corrected.spring.data <- corrected.spring.data %>%
+  group_by(quad_id, species) %>%
+  dplyr::summarise(
+    # keep non-year columns as their first value
+    across(-all_of(year_cols), ~ dplyr::first(.x)),
+    # sum year columns
+    across(all_of(year_cols), ~ sum(.x, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  distinct() %>%
+  arrange(quad_id, species)
+
+
+corrected.fall.data.long <- melt(corrected.fall.data, id.vars = c("species", "quad_id", "plot", "quad"),
+     value.name = "quadcover", variable.name = "year", factorsAsStrings = T)
+
+corrected.spring.data.long <- melt(corrected.spring.data, id.vars = c("species", "quad_id", "plot", "quad"),
+     value.name = "quadcover", variable.name = "year", factorsAsStrings = T)
+
+
+# Re-attache treatment and site
+plot.info <- data.full.long %>%
+  dplyr::select(quad_id, treatment, site) %>%
+  distinct()
+
+corrected.fall.data.long <- corrected.fall.data.long %>%
+  left_join(plot.info, by = "quad_id")
+
+```
+
+
+For spring "missing": FILL W/ AVG OF SURROUNDING YEARS AFTER FIXING EVERYTHING ELSE. These are still 0's, so I'm going to fill these 0's with the average of 2019 and 2023 for each row.
+```{r}
+missing.spring
+
+# Add in treatment and site data. 
+plot.info <- data.full.long %>%
+  dplyr::select(quad_id, treatment, site) %>%
+  unique()
+
+corrected.spring.data.long <- left_join(corrected.spring.data.long, plot.info, by = "quad_id")
+corrected.spring.data.long$season <- 2
+
+# Make wide format (no fill with 0!)
+corrected.spring.data.wide <- dcast(corrected.spring.data.long, treatment + species + season + site + plot + quad + quad_id ~ year, sum, value.var = "quadcover")
+
+# Check that all makes sense, and there's only one row per species x quad_id - good!
+corrected.spring.data.wide %>%
+  group_by(species, quad_id) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n>1)
+
+mean_19_23 <- rowMeans(missing.spring[, c("X2019", "X2023")], na.rm = TRUE)
+
+corrected.spring.data.wide %<>%
+  mutate(X2020 = if_else(quad_id == "crust_grass_C_33_1" & species == "MAPIP", mean_19_23[1], X2020)) %>%
+  mutate(X2021 = if_else(quad_id == "crust_grass_C_33_1" & species == "MAPIP", mean_19_23[1], X2021)) %>%
+  mutate(X2022 = if_else(quad_id == "crust_grass_C_33_1" & species == "MAPIP", mean_19_23[1], X2022)) %>%
+  mutate(X2020 = if_else(quad_id == "crust_grass_C_33_3" & species == "MAPIP", mean_19_23[2], X2020)) %>%
+  mutate(X2021 = if_else(quad_id == "crust_grass_C_33_3" & species == "MAPIP", mean_19_23[2], X2021)) %>%
+  mutate(X2022 = if_else(quad_id == "crust_grass_C_33_3" & species == "MAPIP", mean_19_23[2], X2022)) %>%
+  mutate(X2020 = if_else(quad_id == "crust_grass_C_36_1" & species == "MAPIP", mean_19_23[3], X2020)) %>%
+  mutate(X2021 = if_else(quad_id == "crust_grass_C_36_1" & species == "MAPIP", mean_19_23[3], X2021)) %>%
+  mutate(X2022 = if_else(quad_id == "crust_grass_C_36_1" & species == "MAPIP", mean_19_23[3], X2022)) %>%
+  mutate(X2020 = if_else(quad_id == "crust_grass_C_36_3" & species == "MAPIP", mean_19_23[4], X2020)) %>%
+  mutate(X2021 = if_else(quad_id == "crust_grass_C_36_3" & species == "MAPIP", mean_19_23[4], X2021)) %>%
+  mutate(X2022 = if_else(quad_id == "crust_grass_C_36_3" & species == "MAPIP", mean_19_23[4], X2022)) %>%
+  mutate(X2020 = if_else(quad_id == "crust_grass_C_37_3" & species == "MAPIP", mean_19_23[5], X2020)) %>%
+  mutate(X2021 = if_else(quad_id == "crust_grass_C_37_3" & species == "MAPIP", mean_19_23[5], X2021)) %>%
+  mutate(X2022 = if_else(quad_id == "crust_grass_C_37_3" & species == "MAPIP", mean_19_23[5], X2022))
+
+```
+
+
+
+
+Fix up data for csv (I did some of these steps for spring earlier in the script, which is why they're not here)
+```{r}
+# Remove "MOSS"
+corrected.fall.data.long %<>% filter(!species == "MOSS")
+
+corrected.fall.data.long$season <- 3
+
+corrected.fall.data.long %>%
+  group_by(species, quad_id, year, season) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n>1)
+
+corrected.fall.data.long %>% filter(species == "ASTRA", quad_id == "crust_creosote_C_12_1", season == 3, year == 2017)
+
+
+# Make a numeric year column, and a factor year column.
+corrected.fall.data.long$year.f <- corrected.fall.data.long$year
+corrected.fall.data.long$year <- as.numeric(sub("^X", "", corrected.fall.data.long$year))
+
+corrected.spring.data.long$year.f <- corrected.spring.data.long$year
+corrected.spring.data.long$year <- as.numeric(sub("^X", "", corrected.spring.data.long$year))
+```
+
+
+
+# Merge in climate data
+
+Note: creosote and black have the same climate data (i.e., precip is the same for both sites in a given year x season)
+```{r}
+# Select the columns we need for climate merging
+climate.data <- mass %>%
+  dplyr::select(site, year, season, season.precip, GDD, SPEI.comp) %>%
+  filter(site %in% c("core_black", "core_creosote"))
+
+# Change site names in "climate.data" to match crust site names in "corrected.fall.data.long"
+climate.data.fall <- climate.data %>%
+  mutate(site = factor(if_else(site == "core_black", "crust_grass",
+                        if_else(site == "core_creosote", "crust_creosote", NA)))) %>%
+  mutate(season = if_else(season == "fall", 3, 2)) %>%
+  distinct() %>% 
+  filter(season == 3 & year %in% c(2013:2023))
+
+climate.data.spring <- climate.data %>%
+  mutate(site = factor(if_else(site == "core_black", "crust_grass",
+                        if_else(site == "core_creosote", "crust_creosote", NA)))) %>%
+  mutate(season = if_else(season == "fall", 3, 2)) %>%
+  distinct() %>% 
+  filter(season == 2 & year %in% c(2013:2023))
+
+corrected.fall.data.long <- left_join(corrected.fall.data.long, climate.data.fall, by = c("site", "year", "season"))
+corrected.spring.data.long <- left_join(corrected.spring.data.long, climate.data.spring, by = c("site", "year", "season"))
+
+# Cassie pointed out some rows are duplicated. Not sure why... remove those.
+nrow(corrected.fall.data.long)
+corrected.fall.data.long <- unique(corrected.fall.data.long)
+nrow(corrected.fall.data.long)
+
+nrow(corrected.spring.data.long)
+corrected.spring.data.long <- unique(corrected.spring.data.long)
+nrow(corrected.spring.data.long)
+
+# All of these have one row with quadcover == 0. Remove those.
+corrected.fall.data.long %>%
+  filter(species == "THAC", quad_id == "crust_creosote_C_11_3", year == 2015)
+
+
+
+
+# No dups!
+corrected.fall.data.long %>% 
+  group_by(species, quad_id, year) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n > 1)
+
+nrow(corrected.fall.data.long)
+
+# No dups!
+corrected.spring.data.long %>% 
+  group_by(species, quad_id, year) %>%
+  dplyr::summarise(n = n()) %>%
+  filter(n > 1)
+
+nrow(corrected.spring.data.long)
+
+```
+
+Write data
+```{r}
+# Write corrected fall data in long format
+write.csv(corrected.fall.data.long, "./data/corrected.fall.data.long.csv", row.names = FALSE)
+
+# Write corrected fall data in wide format
+#write.csv(corrected.fall.data.wide, "./data/corrected.fall.data.wide.yr.csv", row.names = FALSE)
+
+# Write corrected spring data in long format
+write.csv(corrected.spring.data.long, "./data/corrected.spring.data.long.csv", row.names = FALSE)
+
+# Write corrected spring data in wide format
+#write.csv(corrected.spring.data.wide, "./data/corrected.spring.data.wide.yr.csv", row.names = FALSE)
+```
+
+Make a wide version with species for columns
+```{r}
+# Remove 2013
+corrected.fall.data.long %<>% filter(!year == 2013)
+corrected.spring.data.long %<>% filter(!year == 2013)
+
+
+# Fall
+sum_or_na <- function(x) if (all(is.na(x))) NA_real_ else sum(x, na.rm = TRUE)
+
+corrected.fall.data.wide.sp <- dcast(
+  corrected.fall.data.long,
+  treatment + year + season + site + plot + quad + quad_id ~ species,
+  fun.aggregate = sum_or_na,
+  value.var = "quadcover",
+  fill = 0
+)
+
+#### Fix quadrats
+# Rules:
+# Plots 21, 22, 24, 25, 26, 27, 30:40: Change quads 2 and 4 to NA in all years
+# Plot 23 spring: in 2016, quads 1, 2, and 3 were monitored. Turn quad 4 to NA in 2016, and quads 2 and 4 to NA in all other years 
+# Plot 28 spring: in 2014, quads 2 and 4 were monitored instead of quads 1 and 3. Turn quads 1 and 3 to NA in 2014, and turn quads 2 and 4 to NA in all other years 
+# Plot 29 spring: In 2017-2023, quad 4 surveyed instead of quad 3. Turn quad 3 to NA in 2017-2023. Turn quad 4 to NA in 2014-2016.
+# Plot 29 fall: in 2017 Quads 1, 2, and 4 were surveyed. Turn quad 3 to NA in 2017, and turn quads 2 and 4 to NA all years except 2017-2023
+# Plot 29 fall: in 2018-2023, Quad 4 was surveyed instead of quad 3. Turn quad 3 to NA in 2018-2023 (should have quads 1 and 4 as non-NA)
+
+
+### Applying fall rules
+# identify species columns
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols <- setdiff(names(corrected.fall.data.wide.sp), id_cols)
+
+# make sure types are sane
+corrected.fall.data.wide.sp <- corrected.fall.data.wide.sp %>%
+  dplyr::mutate(
+    year = as.integer(year),
+    quad = as.integer(quad),
+    plot = as.integer(plot)
+  )
+
+# default: keep quads 1 & 3
+# override: plot 29 in 2017–2023 keep quads 1 & 4
+corrected.fall.data.wide.sp <- corrected.fall.data.wide.sp %>%
+  dplyr::mutate(
+    keep_quad = dplyr::case_when(
+      site == "crust_grass" & plot == 29 & year %in% 2017:2023 ~ quad %in% c(1L, 4L),
+      TRUE ~ quad %in% c(1L, 3L)
+    ),
+    unmonitored = !keep_quad
+  ) %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::all_of(sp_cols), ~ dplyr::if_else(unmonitored, NA_real_, .x))
+  ) %>%
+  dplyr::select(-keep_quad, -unmonitored)
+
+# Check that there are 2 quads monitored for all plot x year
+# helper: a row is "unmonitored" if ALL species columns are NA
+qc <- corrected.fall.data.wide.sp %>%
+  dplyr::mutate(
+    row_unmonitored = rowSums(
+      !is.na(as.matrix(dplyr::across(dplyr::all_of(sp_cols))))
+    ) == 0
+  ) %>%
+  dplyr::group_by(treatment, year, season, site, plot) %>%
+  dplyr::summarise(
+    n_quads_present = dplyr::n_distinct(quad),
+    n_rows_present  = dplyr::n(),  # usually same as n_quads_present unless duplicates
+    n_monitored     = sum(!row_unmonitored),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    ok = dplyr::case_when(
+      n_quads_present == 4 ~ (n_monitored == 2),
+      n_quads_present == 2 ~ (n_monitored == 2),
+      TRUE ~ FALSE  # flag odd cases like 1 or 3 quads present
+    )
+  )
+
+# show the failures
+qc %>% dplyr::filter(!ok) %>% dplyr::arrange(site, plot, year)
+
+
+# Rows where ALL species columns are exactly 0
+all_zero_strict_fall <- corrected.fall.data.wide.sp %>%
+  dplyr::filter(
+    rowSums(is.na(dplyr::pick(dplyr::all_of(sp_cols)))) == 0 &
+    rowSums(dplyr::pick(dplyr::all_of(sp_cols)) != 0) == 0
+  )
+
+# View them. I checked, and these were all empty in "corrected.fall.data" so represent empty quadrats. 
+all_zero_strict_fall
+
+
+write.csv(corrected.fall.data.wide.sp, "./data/corrected.fall.data.wide.sp.csv", row.names = FALSE)
+
+
+
+
+
+# Spring
+corrected.spring.data.wide.sp <- dcast(
+  corrected.spring.data.long,
+  treatment + year + season + site + plot + quad + quad_id ~ species,
+  fun.aggregate = sum_or_na,
+  value.var = "quadcover",
+  fill = 0
+)
+
+### Apply spring rules
+# ---- SPRING: apply quad monitoring rules on the WIDE species table ----
+
+### Applying spring rules
+
+# identify species columns
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols <- setdiff(names(corrected.spring.data.wide.sp), id_cols)
+
+# make sure types are sane
+corrected.spring.data.wide.sp <- corrected.spring.data.wide.sp %>%
+  dplyr::mutate(
+    year = as.integer(year),
+    quad = as.integer(quad),
+    plot = as.integer(plot)
+  )
+
+# default: keep quads 1 & 3
+# overrides:
+# - plot 28 in 2014 → keep 2 & 4
+# - plot 29 in 2017–2023 → keep 1 & 4
+corrected.spring.data.wide.sp <- corrected.spring.data.wide.sp %>%
+  dplyr::mutate(
+    keep_quad = dplyr::case_when(
+
+      # Plot 28 spring: 2014 keep 2 & 4
+      site == "crust_grass" & plot == 28 & year == 2014 ~ quad %in% c(2L, 4L),
+
+      # Plot 29 spring: 2017–2023 keep 1 & 4
+      site == "crust_grass" & plot == 29 & year %in% 2017:2023 ~ quad %in% c(1L, 4L),
+
+      # Everything else: keep 1 & 3
+      TRUE ~ quad %in% c(1L, 3L)
+    ),
+    unmonitored = !keep_quad
+  ) %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::all_of(sp_cols),
+                  ~ dplyr::if_else(unmonitored, NA_real_, .x))
+  ) %>%
+  dplyr::select(-keep_quad, -unmonitored)
+
+
+# Check that there are 2 quads monitored for all plot x year
+# helper: a row is "unmonitored" if ALL species columns are NA
+qc.spring <- corrected.spring.data.wide.sp %>%
+  dplyr::mutate(
+    row_unmonitored = rowSums(
+      !is.na(as.matrix(dplyr::across(dplyr::all_of(sp_cols))))
+    ) == 0
+  ) %>%
+  dplyr::group_by(treatment, year, season, site, plot) %>%
+  dplyr::summarise(
+    n_quads_present = dplyr::n_distinct(quad),
+    n_rows_present  = dplyr::n(),  # usually same as n_quads_present unless duplicates
+    n_monitored     = sum(!row_unmonitored),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    ok = dplyr::case_when(
+      n_quads_present == 4 ~ (n_monitored == 2),
+      n_quads_present == 2 ~ (n_monitored == 2),
+      TRUE ~ FALSE  # flag odd cases like 1 or 3 quads present
+    )
+  )
+
+# show the failures
+qc.spring %>% dplyr::filter(!ok) %>% dplyr::arrange(site, plot, year)
+
+
+
+# Look for rows of all zeros
+# Identify species columns
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols <- setdiff(names(corrected.spring.data.wide.sp), id_cols)
+
+# Rows where ALL species columns are exactly 0
+all_zero_strict_spring <- corrected.spring.data.wide.sp %>%
+  dplyr::filter(
+    rowSums(is.na(dplyr::pick(dplyr::all_of(sp_cols)))) == 0 &
+    rowSums(dplyr::pick(dplyr::all_of(sp_cols)) != 0) == 0
+  )
+
+# View them
+all_zero_strict_spring
+
+# Look in long data. I checked, and these were all empty in "corrected.spring.data" so represent empty quadrats. 
+corrected.spring.data.long %>% filter(year == 2020, plot == 15)
+
+
+
+write.csv(corrected.spring.data.wide.sp, "./data/corrected.spring.data.wide.sp.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+# identify species columns
+id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
+sp_cols <- setdiff(names(corrected.fall.data.wide.sp), id_cols)
+
+tmp <- corrected.fall.data.wide.sp %>%
+  dplyr::mutate(
+    year = as.integer(year),
+    quad = as.integer(quad),
+    plot = as.integer(plot),
+    unmonitored = dplyr::case_when(
+      site == "crust_grass" &
+        plot %in% c(21,22,24,25,26,27,30:40) &
+        quad %in% c(2L,4L) ~ TRUE,
+
+      site == "crust_grass" & plot == 29 & year == 2017 & quad == 3L ~ TRUE,
+
+      site == "crust_grass" & plot == 29 & year %in% 2018:2023 & quad == 3L ~ TRUE,
+
+      site == "crust_grass" & plot == 29 & !(year %in% 2017:2023) &
+        quad %in% c(2L,4L) ~ TRUE,
+
+      TRUE ~ FALSE
+    )
+  )
+
+tmp %>%
+  dplyr::filter(plot == 29, year == 2018) %>%
+  dplyr::select(plot, year, quad, unmonitored)
+```
+
+
+
+
+
+
+

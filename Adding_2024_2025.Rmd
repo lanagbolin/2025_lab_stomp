@@ -7,6 +7,8 @@ output:
     toc: yes
 ---
 
+
+
 # Parking downhill
 
 * I need to do for spring data what I did for fall. See the "Make a mask" section in top chunk, and "### NEW ###" merging step. 
@@ -38,14 +40,14 @@ build_old_mask <- function(old_wide_df, season_label) {
   sp_cols <- names(old_wide_df)[8:ncol(old_wide_df)]
 
   old_wide_df %>%
-    mutate(
-      unmonitored = if_all(all_of(sp_cols), is.na)
+    dplyr::mutate(
+      unmonitored = dplyr::if_all(tidyselect::all_of(sp_cols), is.na)
     ) %>%
-    filter(unmonitored) %>%
+    dplyr::filter(unmonitored) %>%
     dplyr::select(all_of(id_cols)) %>%
     distinct() %>%
     # ---- Apply SAME standardization logic as std_long() ----
-    mutate(
+    dplyr::mutate(
       treatment = dplyr::recode(treatment,
                           "C" = "Ambient",
                           "STOMP" = "Degraded"),
@@ -533,17 +535,19 @@ all_fall_wide <- all_fall_wide %>%
 ### Sanity check - SPRING
 
 # Rows should be all NA or no NA (no partial NA)
+tmp <- all_spring_wide[, sp_cols_spring]
+
 spring_check <- all_spring_wide %>%
-  mutate(
-    n_na = rowSums(is.na(across(all_of(sp_cols_spring)))),
+  dplyr::mutate(
+    n_na = rowSums(is.na(tmp)),
     n_sp = length(sp_cols_spring),
-    type = case_when(
+    type = dplyr::case_when(
       n_na == 0 ~ "no_NA",
       n_na == n_sp ~ "all_NA",
       TRUE ~ "partial_NA"
     )
   ) %>%
-  count(type)
+  dplyr::count(type)
 
 # Should see "all_NA" and "no_NA". No "partial_NA".
 spring_check
@@ -553,31 +557,33 @@ id_cols <- c("treatment","year","season","site","plot","quad","quad_id")
 sp_cols_spring <- setdiff(names(all_spring_wide), id_cols)
 
 spring_quad_check <- all_spring_wide %>%
-  mutate(
-    monitored = !if_all(all_of(sp_cols_spring), is.na)
+  dplyr::mutate(
+    monitored = rowSums(
+      !is.na(all_spring_wide[, sp_cols_spring])
+    ) > 0
   ) %>%
-  group_by(site, treatment, plot, year) %>%
-  summarise(
+  dplyr::group_by(site, treatment, plot, year) %>%
+  dplyr::summarise(
     n_monitored = sum(monitored),
     .groups = "drop"
   )
 
 # Want n_monitored = 2 for all years
 spring_quad_check %>%
-  filter(year %in% 2014:2023) %>%
-  count(n_monitored)
+  dplyr::filter(year %in% 2014:2023) %>%
+  dplyr::count(n_monitored)
 
 spring_quad_check %>%
-  filter(year %in% 2024:2025) %>%
-  count(n_monitored)
+  dplyr::filter(year %in% 2024:2025) %>%
+  dplyr::count(n_monitored)
 
 # Confirm no partial NAs left - want only TRUE
 all_spring_wide %>%
-  mutate(
+  dplyr::mutate(
     n_na = rowSums(is.na(across(all_of(sp_cols_spring)))),
     n_sp = length(sp_cols_spring)
   ) %>%
-  count(n_na == 0 | n_na == n_sp)
+  dplyr::count(n_na == 0 | n_na == n_sp)
 
 
 ### Sanity check - Fall
